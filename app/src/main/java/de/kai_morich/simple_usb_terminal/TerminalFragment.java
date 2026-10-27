@@ -67,12 +67,20 @@ public class TerminalFragment extends Fragment {
     private StringBuilder fullLog = new StringBuilder();
     private String pendingSaveContent = "";
 
+    // === CONTINUOUS LOG V2 ===
+    private boolean isContinuousLogging = false;
+    private java.io.File continuousFile = null;
+    private java.io.FileOutputStream continuousFos = null;
+    private long continuousStartTime = 0;
+    private String continuousFileName = "";
+    private int continuousLogCount = 0;
+
     private View pageGauges, pageGrid;
     private GaugeView gaugeRpm, gaugeMap, gaugeAdv, gaugeDfco;
     private TextView dfcoLamp, liveCellInfo, statusText;
     private LinearLayout mapTableContainer;
     private Button btnBack, btnGet, btnSave, btnLoad;
-    private Button btnShareLog, btnClearLog;
+    private Button btnLog, btnShareLog, btnClearLog;
 
     private ActivityResultLauncher<Intent> loadFileLauncher, saveFileLauncher;
 
@@ -110,7 +118,7 @@ public class TerminalFragment extends Fragment {
         btnGet = view.findViewById(R.id.btnGet);
         btnSave = view.findViewById(R.id.btnSave);
         btnLoad = view.findViewById(R.id.btnLoad);
-        Button btnLog = view.findViewById(R.id.btnLog);
+        btnLog = view.findViewById(R.id.btnLog);
         btnShareLog = view.findViewById(R.id.btnShareLog);
         btnClearLog = view.findViewById(R.id.btnClearLog);
         if(btnBack!=null) btnBack.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE); if(pageGrid!=null) pageGrid.setVisibility(View.GONE); });
@@ -121,13 +129,24 @@ public class TerminalFragment extends Fragment {
         if(btnGet!=null) btnGet.setOnClickListener(v-> send("$GET"));
         if(btnSave!=null) btnSave.setOnClickListener(v-> saveMapToPhone());
         if(btnLoad!=null) btnLoad.setOnClickListener(v-> openFilePicker());
-        if(btnLog!=null){ btnLog.setOnClickListener(v-> quickLog()); btnLog.setOnLongClickListener(v->{ doLog(); return true; }); }
+        // === LOGIC BARU BLACKBOX ===
+        if(btnLog!=null){
+            btnLog.setOnClickListener(v-> {
+                if(isContinuousLogging){
+                    showStopContinuousDialog();
+                } else {
+                    showStartContinuousDialog();
+                }
+            });
+            btnLog.setOnLongClickListener(v->{ doSnapshotLog(); return true; });
+        }
         if(btnShareLog!=null) btnShareLog.setOnClickListener(v-> shareLog());
         if(btnClearLog!=null) btnClearLog.setOnClickListener(v->{ fullLog.setLength(0); logCount=0; Toast.makeText(getContext(),"Log cleared",Toast.LENGTH_SHORT).show(); });
         buildMapTable();
         if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE);
         if(pageGrid!=null) pageGrid.setVisibility(View.GONE);
         updateGauges(currentRpm, currentMap, currentAdv, false);
+        updateLogButtonUI();
         connect();
         return view;
     }
@@ -198,6 +217,23 @@ public class TerminalFragment extends Fragment {
                 if(gaugeDfco!=null){ int dfcoVal = dfco ? 100 : 0; gaugeDfco.setValue(dfcoVal, "DFCO", dfco?"ON":"OFF", 0, 100); }
                 if(dfcoLamp!=null){ dfcoLamp.setText(dfco?"DFCO ON":"DFCO OFF"); }
                 updateActiveHighlight(rpm, map);
+                // Jika continuous logging aktif, tulis tiap sample
+                if(isContinuousLogging && continuousFos!=null){
+                    try{
+                        long elapsed = System.currentTimeMillis() - continuousStartTime;
+                        int rIdx=0,cIdx=0;
+                        for(int i=0;i<15;i++) if(map>=MAP_GRID[i] && map<MAP_GRID[i+1]){rIdx=i; break;}
+                        for(int i=0;i<15;i++) if(rpm>=RPM_GRID[i] && rpm<RPM_GRID[i+1]){cIdx=i; break;}
+                        if(rpm>=RPM_GRID[15]) cIdx=15;
+                        if(map>=MAP_GRID[15]) rIdx=15;
+                        String line = String.format(Locale.US, "%d,%d,%d,%d,%d,%d,%d,%d\n", elapsed, rpm, map, adv, dfco?1:0, rIdx, cIdx, advMap[rIdx][cIdx]);
+                        continuousFos.write(line.getBytes());
+                        continuousLogCount++;
+                        if(continuousLogCount%10==0){
+                            status("LOG "+continuousFileName+" : "+continuousLogCount+" samples");
+                        }
+                    }catch(Exception e){}
+                }
             }catch(Exception e){}
         });
     }
@@ -311,36 +347,136 @@ public class TerminalFragment extends Fragment {
 
     private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment(),Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
 
-    private void doLog(){
+    // === NEW BLACKBOX LOGIC V2 ===
+    private void showStartContinuousDialog(){
         if(getContext()==null) return;
+        LinearLayout layout = new LinearLayout(getContext());
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(40,20,40,20);
+        TextView label = new TextView(getContext());
+        label.setText("Nama file .txt akan disimpan di Download/tune_log/");
+        label.setTextColor(Color.GRAY);
+        label.setTextSize(12);
+        EditText input = new EditText(getContext());
+        String defName = "TUNE_LOG_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".txt";
+        input.setText(defName);
+        input.setHint("contoh: log_nanjak.txt");
+        layout.addView(label);
+        layout.addView(input);
+
+        new AlertDialog.Builder(getContext())
+            .setTitle("START CONTINUOUS LOG")
+            .setMessage("Tulis RPM,MAP,ADV setiap data masuk dari ECU sampai tombol STOP di klik.\n\nTap = START, Long Press = Snapshot 1 detik before+after")
+            .setView(layout)
+            .setPositiveButton("START",(d,w)->{
+                String fname = input.getText().toString().trim();
+                if(fname.isEmpty()) fname = defName;
+                if(!fname.toLowerCase().endsWith(".txt")) fname = fname + ".txt";
+                startContinuousLogging(fname);
+            })
+            .setNegativeButton("Batal",null)
+            .show();
+    }
+
+    private void showStopContinuousDialog(){
+        if(getContext()==null) return;
+        new AlertDialog.Builder(getContext())
+            .setTitle("STOP LOGGING?")
+            .setMessage("File: "+continuousFileName+"\nSamples: "+continuousLogCount+"\n\nMau berhenti dan simpan?")
+            .setPositiveButton("STOP & SIMPAN",(d,w)-> stopContinuousLogging())
+            .setNegativeButton("Lanjutkan LOG",null)
+            .setNeutralButton("Batal + Hapus",(d,w)-> cancelContinuousLogging())
+            .show();
+    }
+
+    private void startContinuousLogging(String fileName){
+        try{
+            java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+            java.io.File tuneLogDir = new java.io.File(downloadDir, "tune_log");
+            if(!tuneLogDir.exists()) tuneLogDir.mkdirs();
+            // Bersihkan nama file dari karakter illegal
+            fileName = fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
+            continuousFile = new java.io.File(tuneLogDir, fileName);
+            continuousFos = new java.io.FileOutputStream(continuousFile);
+            continuousFileName = fileName;
+            continuousStartTime = System.currentTimeMillis();
+            continuousLogCount = 0;
+            isContinuousLogging = true;
+            // Tulis header
+            String header = String.format(Locale.US, "// TARUNA TUNER V7.4 - CONTINUOUS LOG\n// File: %s\n// Start: %s\n// Format: millis,RPM,MAP,ADV,DFCO,Row,Col,ADV_Map\nmillis,RPM,MAP,ADV,DFCO,Row,Col,ADV_Map\n", fileName, new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date()));
+            continuousFos.write(header.getBytes());
+            updateLogButtonUI();
+            status("LOG START: "+fileName);
+            Toast.makeText(getContext(),"START LOG: "+fileName+" di Download/tune_log/", Toast.LENGTH_LONG).show();
+        }catch(Exception e){
+            Toast.makeText(getContext(),"Gagal start log: "+e.getMessage(), Toast.LENGTH_LONG).show();
+            isContinuousLogging = false;
+        }
+    }
+
+    private void stopContinuousLogging(){
+        try{
+            if(continuousFos!=null){
+                continuousFos.flush();
+                continuousFos.close();
+            }
+            isContinuousLogging = false;
+            String msg = "LOG STOPPED: "+continuousFileName+" ("+continuousLogCount+" samples) -> Download/tune_log/";
+            status(msg);
+            Toast.makeText(getContext(),msg, Toast.LENGTH_LONG).show();
+            updateLogButtonUI();
+            continuousFos = null;
+            continuousFile = null;
+        }catch(Exception e){
+            Toast.makeText(getContext(),"Gagal stop: "+e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void cancelContinuousLogging(){
+        try{
+            if(continuousFos!=null){ continuousFos.close(); }
+            if(continuousFile!=null && continuousFile.exists()) continuousFile.delete();
+            isContinuousLogging = false;
+            status("LOG Dibatalkan & Dihapus");
+            Toast.makeText(getContext(),"LOG Dibatalkan", Toast.LENGTH_SHORT).show();
+            updateLogButtonUI();
+        }catch(Exception e){}
+    }
+
+    private void updateLogButtonUI(){
+        if(getActivity()==null) return;
+        getActivity().runOnUiThread(()->{
+            if(btnLog!=null){
+                if(isContinuousLogging){
+                    btnLog.setText("STOP LOG ("+continuousLogCount+")");
+                    btnLog.setBackgroundColor(Color.parseColor("#FF4444"));
+                } else {
+                    btnLog.setText("LOG BLACKBOX");
+                    btnLog.setBackgroundColor(Color.parseColor("#FF9800"));
+                }
+            }
+        });
+    }
+
+    // LONG PRESS = SNAPSHOT 1 DETIK BEFORE+AFTER ke folder sama tune_log
+    private void doSnapshotLog(){
+        if(getContext()==null) return;
+        long now = System.currentTimeMillis();
         int rIdx=0,cIdx=0;
         for(int i=0;i<15;i++) if(currentMap>=MAP_GRID[i] && currentMap<MAP_GRID[i+1]){rIdx=i; break;}
         for(int i=0;i<15;i++) if(currentRpm>=RPM_GRID[i] && currentRpm<RPM_GRID[i+1]){cIdx=i; break;}
         if(currentRpm>=RPM_GRID[15]) cIdx=15;
         if(currentMap>=MAP_GRID[15]) rIdx=15;
         final int fr=rIdx, fc=cIdx;
-        EditText input=new EditText(getContext());
-        input.setHint("Misal: Ngempos, Ngelitik, Enak");
-        new AlertDialog.Builder(getContext()).setTitle("LOG @ RPM "+currentRpm+" MAP "+currentMap+" ADV "+currentAdv+" deg")
-            .setMessage("Cell: Row "+fr+" Col "+fc+" ["+MAP_GRID[fr]+"kPa / "+RPM_GRID[fc]+" RPM] = "+advMap[fr][fc]+" deg\n\nAkan simpan 1 detik SEBELUM + SESUDAH klik ke Download")
-            .setView(input)
-            .setPositiveButton("SIMPAN LOG",(d,w)->{
-                String note=input.getText().toString();
-                if(note.trim().isEmpty()) note="Aneh";
-                startLogWithPrePost(note, fr, fc);
-            })
-            .setNegativeButton("Batal",null)
-            .setNeutralButton("Quick LOG",(d,w)-> quickLog())
-            .show();
+        logTriggerTime = now;
+        pendingRow = fr; pendingCol = fc;
+        pendingNote = "SNAPSHOT";
+        pendingPost.clear();
+        waitingPost = true;
+        status("SNAPSHOT trigger @ "+currentRpm+" RPM - rekam 1 detik sesudah...");
+        Toast.makeText(getContext(),"SNAPSHOT - tunggu 1 detik sesudah", Toast.LENGTH_SHORT).show();
     }
-    private void quickLog(){
-        int rIdx=0,cIdx=0;
-        for(int i=0;i<15;i++) if(currentMap>=MAP_GRID[i] && currentMap<MAP_GRID[i+1]){rIdx=i; break;}
-        for(int i=0;i<15;i++) if(currentRpm>=RPM_GRID[i] && currentRpm<RPM_GRID[i+1]){cIdx=i; break;}
-        if(currentRpm>=RPM_GRID[15]) cIdx=15;
-        if(currentMap>=MAP_GRID[15]) rIdx=15;
-        startLogWithPrePost("Quick", rIdx, cIdx);
-    }
+
     private void startLogWithPrePost(String note, int r, int c){
         pendingNote = note; pendingRow=r; pendingCol=c;
         logTriggerTime = System.currentTimeMillis();
@@ -354,7 +490,7 @@ public class TerminalFragment extends Fragment {
         String time = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(new Date(logTriggerTime));
         logCount++;
         StringBuilder entry = new StringBuilder();
-        entry.append(String.format(Locale.US, "\n=== LOG #%d @ %s - %s ===\n", logCount, time, pendingNote));
+        entry.append(String.format(Locale.US, "\n=== SNAPSHOT #%d @ %s ===\n", logCount, time));
         entry.append(String.format(Locale.US, "Trigger: RPM %d MAP %d ADV %d deg | Row %d Col %d [%dkPa / %dRPM = %d deg]\n", currentRpm, currentMap, currentAdv, pendingRow, pendingCol, MAP_GRID[pendingRow], RPM_GRID[pendingCol], advMap[pendingRow][pendingCol]));
         entry.append("--- 1 DETIK SEBELUM ---\n");
         long cutoffBefore = logTriggerTime - 1000;
@@ -363,12 +499,32 @@ public class TerminalFragment extends Fragment {
         entry.append(String.format(Locale.US, "  0ms: RPM %d MAP %d ADV %d <-- TRIGGER\n", currentRpm, currentMap, currentAdv));
         entry.append("--- 1 DETIK SESUDAH ---\n");
         for(Sample s: pendingPost){ entry.append(String.format(Locale.US, "  +%dms: RPM %d MAP %d ADV %d\n", (int)(s.t-logTriggerTime), s.rpm, s.map, s.adv)); }
-        entry.append("=== END LOG ===\n");
+        entry.append("=== END SNAPSHOT ===\n");
         fullLog.append(entry.toString());
-        saveLogToDownload(entry.toString());
-        status("LOG #"+logCount+" SAVED to Download");
-        Toast.makeText(getContext(),"LOG #"+logCount+" saved to Download",Toast.LENGTH_LONG).show();
+        saveSnapshotToTuneLog(entry.toString());
+        status("SNAPSHOT #"+logCount+" SAVED to tune_log");
+        Toast.makeText(getContext(),"SNAPSHOT #"+logCount+" saved to Download/tune_log/",Toast.LENGTH_LONG).show();
     }
+
+    private void saveSnapshotToTuneLog(String content){
+        try{
+            java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+            java.io.File tuneLogDir = new java.io.File(downloadDir, "tune_log");
+            if(!tuneLogDir.exists()) tuneLogDir.mkdirs();
+            String fileName = "SNAPSHOT_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
+            java.io.File file = new java.io.File(tuneLogDir, fileName);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(file, true);
+            fos.write(content.getBytes());
+            fos.close();
+            java.io.File allFile = new java.io.File(tuneLogDir, "BLACKBOX_ALL.txt");
+            java.io.FileOutputStream fos2 = new java.io.FileOutputStream(allFile, true);
+            fos2.write(content.getBytes());
+            fos2.close();
+        }catch(Exception e){
+            saveLogToDownload(content);
+        }
+    }
+
     private void saveLogToDownload(String content){
         try{
             String fileName = "BLACKBOX_LOG_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
@@ -378,10 +534,6 @@ public class TerminalFragment extends Fragment {
             java.io.FileOutputStream fos = new java.io.FileOutputStream(file, true);
             fos.write(content.getBytes());
             fos.close();
-            java.io.File fullFile = new java.io.File(downloadDir, "TARUNA_BLACKBOX_ALL.txt");
-            java.io.FileOutputStream fos2 = new java.io.FileOutputStream(fullFile, true);
-            fos2.write(content.getBytes());
-            fos2.close();
         }catch(Exception e){
             try{
                 String fileName = "BLACKBOX_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
@@ -523,5 +675,5 @@ public class TerminalFragment extends Fragment {
         else if(clean.contains("SAVE_DONE")||clean.contains("$OK,SAVE")||clean.toUpperCase().contains("SAVE OK")){ Toast.makeText(getContext(),"Map Saved to EEPROM!",Toast.LENGTH_LONG).show(); status("SAVE DONE"); }
     }
 
-    @Override public void onDestroy(){ super.onDestroy(); try{ stopRead=true; if(readThread!=null) readThread.interrupt(); }catch(Exception e){} try{ if(currentPort!=null) currentPort.close(); }catch(Exception e){} try{ if(currentConnection!=null) currentConnection.close(); }catch(Exception e){} try{ if(receiverRegistered) getActivity().unregisterReceiver(usbPermissionReceiver); }catch(Exception e){} }
+    @Override public void onDestroy(){ super.onDestroy(); try{ stopRead=true; if(readThread!=null) readThread.interrupt(); }catch(Exception e){} try{ if(currentPort!=null) currentPort.close(); }catch(Exception e){} try{ if(currentConnection!=null) currentConnection.close(); }catch(Exception e){} try{ if(receiverRegistered) getActivity().unregisterReceiver(usbPermissionReceiver); }catch(Exception e){} try{ if(continuousFos!=null){ continuousFos.close(); } }catch(Exception e){} }
 }
