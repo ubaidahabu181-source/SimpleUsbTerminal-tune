@@ -1,675 +1,245 @@
+
 package de.kai_morich.simple_usb_terminal;
 
-import android.Manifest;
-import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.PendingIntent;
-import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.content.ServiceConnection;
-import android.hardware.usb.UsbDevice;
-import android.hardware.usb.UsbDeviceConnection;
-import android.hardware.usb.UsbManager;
-import android.os.Build;
+import android.graphics.Color;
+import android.net.Uri;
 import android.os.Bundle;
-import android.os.Handler;
 import android.os.IBinder;
-import android.os.Looper;
-import android.text.Editable;
-import android.text.Spannable;
-import android.text.SpannableStringBuilder;
-import android.text.method.ScrollingMovementMethod;
-import android.text.style.ForegroundColorSpan;
 import android.view.LayoutInflater;
-import android.view.Menu;
-import android.view.MenuInflater;
-import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageButton;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
-import android.widget.ToggleButton;
-
 import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.core.content.ContextCompat;
 import androidx.fragment.app.Fragment;
-
-import com.hoho.android.usbserial.driver.SerialTimeoutException;
-import com.hoho.android.usbserial.driver.UsbSerialDriver;
-import com.hoho.android.usbserial.driver.UsbSerialPort;
-import com.hoho.android.usbserial.driver.UsbSerialProber;
-import com.hoho.android.usbserial.util.XonXoffFilter;
-
-import java.io.IOException;
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.EnumSet;
+import java.util.Date;
+import java.util.Locale;
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 
 public class TerminalFragment extends Fragment implements ServiceConnection, SerialListener {
 
     private enum Connected { False, Pending, True }
-
-    private final Handler mainLooper;
-    private final BroadcastReceiver broadcastReceiver;
-    private int deviceId, portNum, baudRate;
-    private UsbSerialPort usbSerialPort;
-    private SerialService service;
-
-    private TextView receiveText;
-    private TextView sendText;
-    private ImageButton sendBtn;
-    private TextUtil.HexWatcher hexWatcher;
-
     private Connected connected = Connected.False;
+    private String deviceAddress;
+    private SerialService service;
     private boolean initialStart = true;
-    private boolean hexEnabled = false;
-    private enum SendButtonState {Idle, Busy, Disabled};
+    private String newline = "\r\n";
 
-    private ControlLines controlLines = new ControlLines();
-    private XonXoffFilter flowControlFilter;
+    // UI
+    private View pageGauges, pageGrid;
+    private GaugeView gaugeRpm, gaugeMap, gaugeAdv;
+    private TextView dfcoLamp, liveCellInfo, statusText;
+    private LinearLayout mapTableContainer;
+    private Button btnBack, btnGet, btnSave, btnLoad;
 
-    private boolean pendingNewline = false;
-    private String newline = TextUtil.newline_crlf;
+    private int[][] advMap = new int[16][16];
+    private TextView[][] cellViews = new TextView[16][16];
+    private int currentRpm=800, currentMap=20, currentAdv=18;
+    private int lastActiveRow=-1, lastActiveCol=-1;
+    private int[] RPM_GRID={500,800,1000,1200,1500,1800,2100,2400,2700,3000,3500,4000,4500,5000,6000,7000};
+    private int[] MAP_GRID={20,25,30,35,40,45,50,55,60,65,70,75,80,85,92,100};
+    private String buffer="";
+    private String pendingSaveContent="";
+    private androidx.activity.result.ActivityResultLauncher<Intent> saveFileLauncher, loadFileLauncher;
 
-    public TerminalFragment() {
-        mainLooper = new Handler(Looper.getMainLooper());
-        broadcastReceiver = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context context, Intent intent) {
-                if(Constants.INTENT_ACTION_GRANT_USB.equals(intent.getAction())) {
-                    Boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
-                    connect(granted);
-                }
-            }
-        };
-    }
-
-    /*
-     * Lifecycle
-     */
-    @Override
-    public void onCreate(@Nullable Bundle savedInstanceState) {
+    @Override public void onCreate(Bundle savedInstanceState){
         super.onCreate(savedInstanceState);
-        setHasOptionsMenu(true);
         setRetainInstance(true);
-        deviceId = getArguments().getInt("device");
-        portNum = getArguments().getInt("port");
-        baudRate = getArguments().getInt("baud");
+        if(getArguments()!=null) deviceAddress=getArguments().getString("device");
+        saveFileLauncher=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result->{ if(result.getResultCode()==android.app.Activity.RESULT_OK && result.getData()!=null){ Uri uri=result.getData().getData(); if(uri!=null) saveMapToUri(uri, pendingSaveContent); } });
+        loadFileLauncher=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result->{ if(result.getResultCode()==android.app.Activity.RESULT_OK && result.getData()!=null){ Uri uri=result.getData().getData(); if(uri!=null) loadMapFromUri(uri); } });
+        int[][] base={{16,18,18,18,19,19,20,21,22,23,24,25,26,27,28,29},{16,15,16,18,19,20,22,23,24,25,26,27,28,29,30,31},{15,15,17,18,20,21,23,24,25,26,27,28,29,30,31,32},{15,15,17,19,21,23,24,25,26,27,28,29,30,31,32,33},{16,16,18,20,21,23,25,26,27,28,29,30,31,32,33,34},{17,17,19,20,22,24,25,26,27,28,29,30,31,32,33,34},{16,16,18,19,21,23,24,25,26,27,28,29,30,31,32,33},{15,15,17,18,20,22,23,24,25,26,27,28,29,30,31,32},{15,14,16,17,19,20,22,23,24,25,26,27,28,29,30,31},{14,14,15,17,18,20,21,22,23,24,25,26,27,28,29,30},{13,13,14,16,17,18,20,21,22,23,24,25,26,27,28,29},{12,12,13,15,16,17,19,20,21,22,23,24,25,26,27,28},{12,11,12,13,15,16,17,18,19,20,21,22,23,24,25,26},{11,11,12,13,14,15,17,18,19,20,21,22,23,24,25,26},{10,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24},{8,9,10,11,12,13,15,16,17,18,19,20,21,22,23,24}};
+        advMap=base;
     }
 
-    @Override
-    public void onDestroy() {
-        if (connected != Connected.False)
-            disconnect();
-        getActivity().stopService(new Intent(getActivity(), SerialService.class));
-        super.onDestroy();
-    }
-
-    @Override
-    public void onStart() {
-        super.onStart();
-        if(service != null)
-            service.attach(this);
-        else
-            getActivity().startService(new Intent(getActivity(), SerialService.class)); // prevents service destroy on unbind from recreated activity caused by orientation change
-        ContextCompat.registerReceiver(getActivity(), broadcastReceiver, new IntentFilter(Constants.INTENT_ACTION_GRANT_USB), ContextCompat.RECEIVER_NOT_EXPORTED);
-    }
-
-    @Override
-    public void onStop() {
-        getActivity().unregisterReceiver(broadcastReceiver);
-        if(service != null && !getActivity().isChangingConfigurations())
-            service.detach();
-        super.onStop();
-    }
-
-    @SuppressWarnings("deprecation") // onAttach(context) was added with API 23. onAttach(activity) works for all API versions
-    @Override
-    public void onAttach(@NonNull Activity activity) {
-        super.onAttach(activity);
-        getActivity().bindService(new Intent(getActivity(), SerialService.class), this, Context.BIND_AUTO_CREATE);
-    }
-
-    @Override
-    public void onDetach() {
-        try { getActivity().unbindService(this); } catch(Exception ignored) {}
-        super.onDetach();
-    }
-
-    @Override
-    public void onResume() {
-        super.onResume();
-        if(initialStart && service != null) {
-            initialStart = false;
-            getActivity().runOnUiThread(this::connect);
-        }
-        if(connected == Connected.True)
-            controlLines.start();
-    }
-
-    @Override
-    public void onPause() {
-        controlLines.stop();
-        super.onPause();
-    }
-
-    @Override
-    public void onServiceConnected(ComponentName name, IBinder binder) {
-        service = ((SerialService.SerialBinder) binder).getService();
-        service.attach(this);
-        if(initialStart && isResumed()) {
-            initialStart = false;
-            getActivity().runOnUiThread(this::connect);
-        }
-    }
-
-    @Override
-    public void onServiceDisconnected(ComponentName name) {
-        service = null;
-    }
-
-    /*
-     * UI
-     */
-    @Override
-    public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState) {
-        View view = inflater.inflate(R.layout.fragment_terminal, container, false);
-        receiveText = view.findViewById(R.id.receive_text);                          // TextView performance decreases with number of spans
-        receiveText.setTextColor(getResources().getColor(R.color.colorRecieveText)); // set as default color to reduce number of spans
-        receiveText.setMovementMethod(ScrollingMovementMethod.getInstance());
-
-        sendText = view.findViewById(R.id.send_text);
-        sendBtn = view.findViewById(R.id.send_btn);
-        hexWatcher = new TextUtil.HexWatcher(sendText);
-        hexWatcher.enable(hexEnabled);
-        sendText.addTextChangedListener(hexWatcher);
-        sendText.setHint(hexEnabled ? "HEX mode" : "");
-
-        View sendBtn = view.findViewById(R.id.send_btn);
-        sendBtn.setOnClickListener(v -> send(sendText.getText().toString()));
-        controlLines.onCreateView(view);
+    @Override public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState){
+        View view=inflater.inflate(R.layout.fragment_terminal, container, false);
+        pageGauges=view.findViewById(R.id.pageGauges); pageGrid=view.findViewById(R.id.pageGrid);
+        gaugeRpm=view.findViewById(R.id.gaugeRpm); gaugeMap=view.findViewById(R.id.gaugeMap); gaugeAdv=view.findViewById(R.id.gaugeAdv);
+        dfcoLamp=view.findViewById(R.id.dfcoLamp); mapTableContainer=view.findViewById(R.id.mapTableContainer);
+        liveCellInfo=view.findViewById(R.id.liveCellInfo); statusText=view.findViewById(R.id.statusText);
+        btnBack=view.findViewById(R.id.btnBack); btnGet=view.findViewById(R.id.btnGet); btnSave=view.findViewById(R.id.btnSave); btnLoad=view.findViewById(R.id.btnLoad);
+        if(btnBack!=null) btnBack.setOnClickListener(v->{ pageGauges.setVisibility(View.VISIBLE); pageGrid.setVisibility(View.GONE); });
+        if(gaugeAdv!=null) gaugeAdv.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); });
+        if(gaugeRpm!=null) gaugeRpm.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); });
+        if(gaugeMap!=null) gaugeMap.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); });
+        if(btnGet!=null) btnGet.setOnClickListener(v-> send("$GET\n"));
+        if(btnSave!=null) btnSave.setOnClickListener(v-> saveMapToPhone());
+        if(btnLoad!=null) btnLoad.setOnClickListener(v-> openFilePicker());
+        buildMapTable();
+        if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE);
+        if(pageGrid!=null) pageGrid.setVisibility(View.GONE);
+        updateGauges(currentRpm, currentMap, currentAdv, false);
         return view;
     }
 
-    @Override
-    public void onCreateOptionsMenu(@NonNull Menu menu, MenuInflater inflater) {
-        inflater.inflate(R.menu.menu_terminal, menu);
-    }
-
-    public void onPrepareOptionsMenu(@NonNull Menu menu) {
-        menu.findItem(R.id.hex).setChecked(hexEnabled);
-        controlLines.onPrepareOptionsMenu(menu);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            menu.findItem(R.id.backgroundNotification).setChecked(service != null && service.areNotificationsEnabled());
-        } else {
-            menu.findItem(R.id.backgroundNotification).setChecked(true);
-            menu.findItem(R.id.backgroundNotification).setEnabled(false);
+    private void buildMapTable(){
+        if(mapTableContainer==null||getContext()==null) return;
+        mapTableContainer.removeAllViews();
+        LinearLayout header=new LinearLayout(getContext()); header.setOrientation(LinearLayout.HORIZONTAL);
+        TextView corner=new TextView(getContext()); corner.setText("MAP/RPM"); corner.setWidth(180); corner.setTextColor(Color.GRAY); header.addView(corner);
+        for(int c=0;c<16;c++){ TextView tv=new TextView(getContext()); tv.setText(String.valueOf(RPM_GRID[c])); tv.setWidth(120); tv.setTextColor(Color.GRAY); header.addView(tv); }
+        mapTableContainer.addView(header);
+        for(int r=0;r<16;r++){
+            LinearLayout row=new LinearLayout(getContext()); row.setOrientation(LinearLayout.HORIZONTAL);
+            TextView label=new TextView(getContext()); label.setText(MAP_GRID[r]+"kPa"); label.setWidth(180); label.setTextColor(Color.CYAN); row.addView(label);
+            for(int c=0;c<16;c++){
+                TextView cell=new TextView(getContext()); cell.setText(String.valueOf(advMap[r][c])); cell.setWidth(120); cell.setHeight(90); cell.setGravity(17); cell.setPadding(8,8,8,8);
+                int v=advMap[r][c]; cell.setTextColor(Color.WHITE);
+                if(v==5) cell.setBackgroundColor(Color.parseColor("#333333"));
+                else if(v<13) cell.setBackgroundColor(Color.parseColor("#1A3A2A"));
+                else if(v<20) cell.setBackgroundColor(Color.parseColor("#2A5A1A"));
+                else if(v<27) cell.setBackgroundColor(Color.parseColor("#8A6A00"));
+                else cell.setBackgroundColor(Color.parseColor("#8A2A00"));
+                final int fr=r,fc=c; cell.setOnClickListener(vw->showEditDialog(fr,fc)); cellViews[r][c]=cell; row.addView(cell);
+            }
+            mapTableContainer.addView(row);
         }
+        lastActiveRow=-1; lastActiveCol=-1; updateActiveHighlight(currentRpm, currentMap);
     }
 
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        int id = item.getItemId();
-        if (id == R.id.clear) {
-            receiveText.setText("");
-            return true;
-        } else if (id == R.id.newline) {
-            String[] newlineNames = getResources().getStringArray(R.array.newline_names);
-            String[] newlineValues = getResources().getStringArray(R.array.newline_values);
-            int pos = Arrays.asList(newlineValues).indexOf(newline);
-            AlertDialog.Builder builder = new AlertDialog.Builder(getActivity());
-            builder.setTitle("Newline");
-            builder.setSingleChoiceItems(newlineNames, pos, (dialog, which) -> {
-                newline = newlineValues[which];
-                dialog.dismiss();
-            });
-            builder.create().show();
-            return true;
-        } else if (id == R.id.hex) {
-            hexEnabled = !hexEnabled;
-            sendText.setText("");
-            hexWatcher.enable(hexEnabled);
-            sendText.setHint(hexEnabled ? "HEX mode" : "");
-            item.setChecked(hexEnabled);
-            return true;
-        } else if (id == R.id.controlLines) {
-            item.setChecked(controlLines.showControlLines(!item.isChecked()));
-            return true;
-        } else if (id == R.id.flowControl) {
-            controlLines.selectFlowControl();
-            return true;
-        } else if (id == R.id.backgroundNotification) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (!service.areNotificationsEnabled() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 0);
-                } else {
-                    showNotificationSettings();
+    private void updateActiveHighlight(int rpm, int mapKpa){
+        if(cellViews==null) return;
+        int activeRow=0, activeCol=0;
+        for(int i=0;i<15;i++){ if(mapKpa>=MAP_GRID[i] && mapKpa<MAP_GRID[i+1]){ activeRow=i; break; } if(mapKpa>=MAP_GRID[15]) activeRow=15; }
+        for(int i=0;i<15;i++){ if(rpm>=RPM_GRID[i] && rpm<RPM_GRID[i+1]){ activeCol=i; break; } if(rpm>=RPM_GRID[15]) activeCol=15; }
+        if(activeRow==lastActiveRow && activeCol==lastActiveCol) return;
+        try{
+            if(lastActiveRow>=0 && lastActiveCol>=0){
+                TextView old=cellViews[lastActiveRow][lastActiveCol];
+                if(old!=null){ int v=advMap[lastActiveRow][lastActiveCol]; old.setText(String.valueOf(v)); old.setTextColor(Color.WHITE);
+                    if(v==5) old.setBackgroundColor(Color.parseColor("#333333"));
+                    else if(v<13) old.setBackgroundColor(Color.parseColor("#1A3A2A"));
+                    else if(v<20) old.setBackgroundColor(Color.parseColor("#2A5A1A"));
+                    else if(v<27) old.setBackgroundColor(Color.parseColor("#8A6A00"));
+                    else old.setBackgroundColor(Color.parseColor("#8A2A00"));
                 }
             }
-            return true;
-        } else if (id == R.id.sendBreak) {
-            try {
-                usbSerialPort.setBreak(true);
-                Thread.sleep(100);
-                status("send BREAK");
-                usbSerialPort.setBreak(false);
-            } catch (Exception e) {
-                status("send BREAK failed: " + e.getMessage());
+            TextView cur=cellViews[activeRow][activeCol];
+            if(cur!=null){
+                android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
+                gd.setColor(Color.parseColor("#FFEB3B")); gd.setStroke(5, Color.parseColor("#FF3D00")); gd.setCornerRadius(6);
+                cur.setBackground(gd); cur.setTextColor(Color.BLACK);
             }
-            return true;
-        }
-        return super.onOptionsItemSelected(item);
+            lastActiveRow=activeRow; lastActiveCol=activeCol;
+            if(liveCellInfo!=null) liveCellInfo.setText("Live Cell: RPM "+RPM_GRID[activeCol]+" / MAP "+MAP_GRID[activeRow]+" kPa -> Row "+activeRow+" Col "+activeCol+" = "+advMap[activeRow][activeCol]+" deg | Real ADV: "+currentAdv+" deg");
+        }catch(Exception e){}
     }
 
-    /*
-     * Serial + UI
-     */
-    private void connect() {
-        connect(null);
+    private void updateGauges(int rpm, int map, int adv, boolean dfco){
+        currentRpm=rpm; currentMap=map; currentAdv=adv;
+        if(getActivity()!=null) getActivity().runOnUiThread(()->{
+            try{
+                if(gaugeRpm!=null) gaugeRpm.setValue(rpm, "RPM", rpm+" RPM", 0, 7000);
+                if(gaugeMap!=null) gaugeMap.setValue(map, "MAP", map+" kPa", 0, 100);
+                if(gaugeAdv!=null) gaugeAdv.setValue(adv, "ADV", adv+" deg", 0, 50);
+                if(dfcoLamp!=null){
+                    dfcoLamp.setText(dfco?"DFCO ON":"DFCO OFF");
+                    dfcoLamp.setTextColor(dfco?Color.parseColor("#00FFFF"):Color.parseColor("#555555"));
+                }
+                updateActiveHighlight(rpm, map);
+            }catch(Exception e){}
+        });
     }
 
-    private void connect(Boolean permissionGranted) {
-        UsbDevice device = null;
-        UsbManager usbManager = (UsbManager) getActivity().getSystemService(Context.USB_SERVICE);
-        for(UsbDevice v : usbManager.getDeviceList().values())
-            if(v.getDeviceId() == deviceId)
-                device = v;
-        if(device == null) {
-            status("connection failed: device not found");
-            return;
-        }
-        UsbSerialDriver driver = UsbSerialProber.getDefaultProber().probeDevice(device);
-        if(driver == null) {
-            driver = CustomProber.getCustomProber().probeDevice(device);
-        }
-        if(driver == null) {
-            status("connection failed: no driver for device");
-            return;
-        }
-        if(driver.getPorts().size() < portNum) {
-            status("connection failed: not enough ports at device");
-            return;
-        }
-        usbSerialPort = driver.getPorts().get(portNum);
-        UsbDeviceConnection usbConnection = usbManager.openDevice(driver.getDevice());
-        if(usbConnection == null && permissionGranted == null && !usbManager.hasPermission(driver.getDevice())) {
-            int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ? PendingIntent.FLAG_MUTABLE : 0;
-            Intent intent = new Intent(Constants.INTENT_ACTION_GRANT_USB);
-            intent.setPackage(getActivity().getPackageName());
-            PendingIntent usbPermissionIntent = PendingIntent.getBroadcast(getActivity(), 0, intent, flags);
-            usbManager.requestPermission(driver.getDevice(), usbPermissionIntent);
-            return;
-        }
-        if(usbConnection == null) {
-            if (!usbManager.hasPermission(driver.getDevice()))
-                status("connection failed: permission denied");
-            else
-                status("connection failed: open failed");
-            return;
-        }
+    private void showEditDialog(int r,int c){
+        if(getContext()==null) return;
+        EditText input=new EditText(getContext()); input.setText(String.valueOf(advMap[r][c])); input.setInputType(2);
+        new AlertDialog.Builder(getContext()).setTitle("Edit ADV ["+MAP_GRID[r]+"kPa , "+RPM_GRID[c]+"RPM]").setView(input).setPositiveButton("SET",(d,w)->{ try{ int v=Integer.parseInt(input.getText().toString()); if(v>=0&&v<=50){ advMap[r][c]=v; if(cellViews[r][c]!=null) cellViews[r][c].setText(String.valueOf(v)); send("$SET,"+r+","+c+","+v+"\n"); } }catch(Exception e){} }).setNegativeButton("Batal",null).show();
+    }
 
-        connected = Connected.Pending;
-        try {
-            usbSerialPort.open(usbConnection);
-            try {
-                usbSerialPort.setParameters(baudRate, UsbSerialPort.DATABITS_8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE);
-            } catch (UnsupportedOperationException e) {
-                status("Setting serial parameters failed: " + e.getMessage());
+    private void send(String str){
+        if(connected!=Connected.True){ status("Not connected"); return; }
+        try{ service.write((str+newline).getBytes()); status("TX: "+str.trim()); }catch(Exception e){ status("TX Error: "+e.getMessage()); }
+    }
+
+    private void openFilePicker(){ Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); try{ loadFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"File picker tidak tersedia",Toast.LENGTH_SHORT).show(); } }
+    private void loadMapFromUri(Uri uri){ try{ InputStream is=getActivity().getContentResolver().openInputStream(uri); BufferedReader reader=new BufferedReader(new InputStreamReader(is)); String line; int r=0; while((line=reader.readLine())!=null && r<16){ String[] parts=line.split(","); if(parts.length>=16){ for(int c=0;c<16;c++){ try{ advMap[r][c]=Integer.parseInt(parts[c].trim()); }catch(Exception e){} } r++; } } reader.close(); buildMapTable(); Toast.makeText(getContext(),"Loaded "+r+" rows",Toast.LENGTH_SHORT).show(); }catch(Exception e){ Toast.makeText(getContext(),"Load gagal: "+e.getMessage(),Toast.LENGTH_SHORT).show(); } }
+    private void saveMapToPhone(){ StringBuilder sb=new StringBuilder(); for(int r=0;r<16;r++){ for(int c=0;c<16;c++){ sb.append(advMap[r][c]); if(c<15) sb.append(","); } sb.append("\n"); } pendingSaveContent=sb.toString(); String fileName="ADV_MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".txt"; Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("text/plain"); intent.putExtra(Intent.EXTRA_TITLE, fileName); try{ saveFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"Save tidak support",Toast.LENGTH_SHORT).show(); } }
+    private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment(),Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
+
+    public void status(String s){ if(statusText!=null && getActivity()!=null) getActivity().runOnUiThread(()->statusText.setText(s)); }
+
+    @Override public void onSerialConnect(){ status("CONNECTED - ECU ONLINE"); connected=Connected.True; send("$GET"); }
+    @Override public void onSerialConnectError(Exception e){ status("Connect Error: "+e.getMessage()); connected=Connected.False; }
+    @Override public void onSerialRead(byte[] data){ receive(data); }
+    @Override public void onSerialRead(ArrayDeque<byte[]> datas){ for(byte[] d: datas) receive(d); }
+    @Override public void onSerialIoError(Exception e){ status("IO Error: "+e.getMessage()); connected=Connected.False; }
+
+    private void receive(byte[] data){
+        buffer+=new String(data);
+        int nl;
+        while((nl=buffer.indexOf("\n"))>=0){
+            String line=buffer.substring(0,nl).trim();
+            buffer=buffer.substring(nl+1);
+            if(line.isEmpty()) continue;
+            String clean=line.replace("*","").trim();
+            status(clean);
+            int rpm=currentRpm, map=currentMap, adv=currentAdv;
+            boolean found=false;
+            if(clean.contains("RPM")){
+                try{
+                    String[] p=clean.replace("$","").split(",");
+                    for(int i=0;i<p.length-1;i++){
+                        String k=p[i].trim().toUpperCase();
+                        if(k.equals("RPM")){ rpm=Integer.parseInt(p[i+1].replaceAll("[^0-9]","")); found=true; }
+                        if(k.equals("MAP")){ map=Integer.parseInt(p[i+1].replaceAll("[^0-9]","")); found=true; }
+                        if(k.equals("ADV")){ adv=Integer.parseInt(p[i+1].replaceAll("[^0-9]","")); found=true; }
+                    }
+                }catch(Exception e){}
             }
-            SerialSocket socket = new SerialSocket(getActivity().getApplicationContext(), usbConnection, usbSerialPort);
+            if(found){ boolean dfco=(map<30 && rpm>1600); updateGauges(rpm, map, adv, dfco); }
+        }
+    }
+
+    @Override public void onServiceConnected(ComponentName name, IBinder binder){ service=((SerialService.SerialBinder)binder).getService(); service.attach(this); if(initialStart && isResumed()){ initialStart=false; getActivity().runOnUiThread(this::connect); } }
+    @Override public void onServiceDisconnected(ComponentName name){ service=null; }
+
+    private void connect(){
+        try{
+            android.hardware.usb.UsbManager um = (android.hardware.usb.UsbManager)getActivity().getSystemService(android.content.Context.USB_SERVICE);
+            android.hardware.usb.UsbDevice device = null;
+            // Cari device berdasarkan deviceAddress atau ambil yang pertama
+            for(android.hardware.usb.UsbDevice d : um.getDeviceList().values()){
+                if(d.getDeviceName().equals(deviceAddress)){
+                    device = d; break;
+                }
+            }
+            if(device==null && !um.getDeviceList().isEmpty()){
+                device = um.getDeviceList().values().iterator().next();
+            }
+            if(device==null){ status("No USB device found"); return; }
+            if(!um.hasPermission(device)){
+                status("No USB permission for "+device.getDeviceName()+" - go back, re-plug OTG, and ALLOW");
+                return;
+            }
+            android.hardware.usb.UsbDeviceConnection conn = um.openDevice(device);
+            if(conn==null){ status("Failed to open USB connection - permission?"); return; }
+            com.hoho.android.usbserial.driver.UsbSerialDriver driver = com.hoho.android.usbserial.driver.UsbSerialProber.getDefaultProber().probeDevice(device);
+            if(driver==null){ status("No driver for "+device.getDeviceName()); return; }
+            com.hoho.android.usbserial.driver.UsbSerialPort port = driver.getPorts().get(0);
+            SerialSocket socket = new SerialSocket(getActivity().getApplicationContext(), conn, port);
             service.connect(socket);
-            // usb connect is not asynchronous. connect-success and connect-error are returned immediately from socket.connect
-            // for consistency to bluetooth/bluetooth-LE app use same SerialListener and SerialService classes
-            onSerialConnect();
-        } catch (Exception e) {
-            onSerialConnectError(e);
-        }
+            connected=Connected.Pending;
+            status("Connecting to "+device.getDeviceName()+" "+driver.getClass().getSimpleName()+"...");
+        }catch(Exception e){ status("Connect failed: "+e.getMessage()); android.util.Log.e("TARUNA", "connect failed", e); }
     }
 
-    private void disconnect() {
-        connected = Connected.False;
-        controlLines.stop();
-        service.disconnect();
-        updateSendBtn(SendButtonState.Idle);
-        usbSerialPort = null;
-    }
-
-    private void send(String str) {
-        if(connected != Connected.True) {
-            Toast.makeText(getActivity(), "not connected", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        String msg;
-        byte[] data;
-        if(hexEnabled) {
-            StringBuilder sb = new StringBuilder();
-            TextUtil.toHexString(sb, TextUtil.fromHexString(str));
-            TextUtil.toHexString(sb, newline.getBytes());
-            msg = sb.toString();
-            data = TextUtil.fromHexString(msg);
-        } else {
-            msg = str;
-            data = (str + newline).getBytes();
-        }
-        try {
-            SpannableStringBuilder spn = new SpannableStringBuilder(msg + '\n');
-            spn.setSpan(new ForegroundColorSpan(getResources().getColor(R.color.colorSendText)), 0, spn.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-            receiveText.append(spn);
-            service.write(data);
-        } catch (SerialTimeoutException e) { // e.g. writing large data at low baud rate or suspended by flow control
-            mainLooper.post(() -> sendAgain(data, e.bytesTransferred));
-        } catch (Exception e) {
-            onSerialIoError(e);
-        }
-    }
-
-    private void sendAgain(byte[] data0, int offset) {
-        updateSendBtn(controlLines.sendAllowed ? SendButtonState.Busy : SendButtonState.Disabled);
-        if (connected != Connected.True) {
-            return;
-        }
-        byte[] data;
-        if (offset == 0) {
-            data = data0;
-        } else {
-            data = new byte[data0.length - offset];
-            System.arraycopy(data0, offset, data, 0, data.length);
-        }
-        try {
-            service.write(data);
-        } catch (SerialTimeoutException e) {
-            mainLooper.post(() -> sendAgain(data, e.bytesTransferred));
-            return;
-        } catch (Exception e) {
-            onSerialIoError(e);
-        }
-        updateSendBtn(controlLines.sendAllowed ? SendButtonState.Idle : SendButtonState.Disabled);
-    }
-
-    private void receive(ArrayDeque<byte[]> datas) {
-        SpannableStringBuilder spn = new SpannableStringBuilder();
-        for (byte[] data : datas) {
-            if (flowControlFilter != null)
-                data = flowControlFilter.filter(data);
-            if (hexEnabled) {
-                spn.append(TextUtil.toHexString(data)).append('\n');
-            } else {
-                String msg = new String(data);
-                if (newline.equals(TextUtil.newline_crlf) && msg.length() > 0) {
-                    // don't show CR as ^M if directly before LF
-                    msg = msg.replace(TextUtil.newline_crlf, TextUtil.newline_lf);
-                    // special handling if CR and LF come in separate fragments
-                    if (pendingNewline && msg.charAt(0) == '\n') {
-                        if(spn.length() >= 2) {
-                            spn.delete(spn.length() - 2, spn.length());
-                        } else {
-                            Editable edt = receiveText.getEditableText();
-                            if (edt != null && edt.length() >= 2)
-                                edt.delete(edt.length() - 2, edt.length());
-                        }
-                    }
-                    pendingNewline = msg.charAt(msg.length() - 1) == '\r';
-                }
-                spn.append(TextUtil.toCaretString(msg, newline.length() != 0));
-            }
-        }
-        receiveText.append(spn);
-    }
-
-    void status(String str) {
-        SpannableStringBuilder spn = new SpannableStringBuilder(str + '\n');
-        spn.setSpan(new ForegroundColorSpan(getResources().getColor(R.color.colorStatusText)), 0, spn.length(), Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
-        receiveText.append(spn);
-    }
-
-    void updateSendBtn(SendButtonState state) {
-        sendBtn.setEnabled(state == SendButtonState.Idle);
-        sendBtn.setImageAlpha(state == SendButtonState.Idle ? 255 : 64);
-        sendBtn.setImageResource(state == SendButtonState.Disabled ? R.drawable.ic_block_white_24dp : R.drawable.ic_send_white_24dp);
-    }
-
-    /*
-     * starting with Android 14, notifications are not shown in notification bar by default when App is in background
-     */
-
-    private void showNotificationSettings() {
-        Intent intent = new Intent();
-        intent.setAction("android.settings.APP_NOTIFICATION_SETTINGS");
-        intent.putExtra("android.provider.extra.APP_PACKAGE", getActivity().getPackageName());
-        startActivity(intent);
-    }
-
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        if(Arrays.equals(permissions, new String[]{Manifest.permission.POST_NOTIFICATIONS}) &&
-                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !service.areNotificationsEnabled())
-            showNotificationSettings();
-    }
-
-    /*
-     * SerialListener
-     */
-    @Override
-    public void onSerialConnect() {
-        status("connected");
-        connected = Connected.True;
-        controlLines.start();
-    }
-
-    @Override
-    public void onSerialConnectError(Exception e) {
-        status("connection failed: " + e.getMessage());
-        disconnect();
-    }
-
-    @Override
-    public void onSerialRead(byte[] data) {
-        ArrayDeque<byte[]> datas = new ArrayDeque<>();
-        datas.add(data);
-        receive(datas);
-    }
-
-    public void onSerialRead(ArrayDeque<byte[]> datas) {
-        receive(datas);
-    }
-
-    @Override
-    public void onSerialIoError(Exception e) {
-        status("connection lost: " + e.getMessage());
-        disconnect();
-    }
-
-    class ControlLines {
-        private static final int refreshInterval = 200; // msec
-
-        private final Runnable runnable;
-
-        private View frame;
-        private ToggleButton rtsBtn, ctsBtn, dtrBtn, dsrBtn, cdBtn, riBtn;
-
-        private boolean showControlLines;                                               // show & update control line buttons
-        private UsbSerialPort.FlowControl flowControl = UsbSerialPort.FlowControl.NONE; // !NONE: update send button state
-
-        boolean sendAllowed = true;
-
-        ControlLines() {
-            runnable = this::run; // w/o explicit Runnable, a new lambda would be created on each postDelayed, which would not be found again by removeCallbacks
-        }
-
-        void onCreateView(View view) {
-            frame = view.findViewById(R.id.controlLines);
-            rtsBtn = view.findViewById(R.id.controlLineRts);
-            ctsBtn = view.findViewById(R.id.controlLineCts);
-            dtrBtn = view.findViewById(R.id.controlLineDtr);
-            dsrBtn = view.findViewById(R.id.controlLineDsr);
-            cdBtn = view.findViewById(R.id.controlLineCd);
-            riBtn = view.findViewById(R.id.controlLineRi);
-            rtsBtn.setOnClickListener(this::toggle);
-            dtrBtn.setOnClickListener(this::toggle);
-        }
-
-        void onPrepareOptionsMenu(Menu menu) {
-            try {
-                EnumSet<UsbSerialPort.ControlLine> scl = usbSerialPort.getSupportedControlLines();
-                EnumSet<UsbSerialPort.FlowControl> sfc = usbSerialPort.getSupportedFlowControl();
-                menu.findItem(R.id.controlLines).setEnabled(!scl.isEmpty());
-                menu.findItem(R.id.controlLines).setChecked(showControlLines);
-                menu.findItem(R.id.flowControl).setEnabled(sfc.size() > 1);
-            } catch (Exception ignored) {
-            }
-        }
-
-        void selectFlowControl() {
-            EnumSet<UsbSerialPort.FlowControl> sfc = usbSerialPort.getSupportedFlowControl();
-            UsbSerialPort.FlowControl fc = usbSerialPort.getFlowControl();
-            ArrayList<String> names = new ArrayList<>();
-            ArrayList<UsbSerialPort.FlowControl> values = new ArrayList<>();
-            int pos = 0;
-            names.add("<none>");
-            values.add(UsbSerialPort.FlowControl.NONE);
-            if (sfc.contains(UsbSerialPort.FlowControl.RTS_CTS)) {
-                names.add("RTS/CTS control lines");
-                values.add(UsbSerialPort.FlowControl.RTS_CTS);
-                if (fc == UsbSerialPort.FlowControl.RTS_CTS) pos = names.size() -1;
-            }
-            if (sfc.contains(UsbSerialPort.FlowControl.DTR_DSR)) {
-                names.add("DTR/DSR control lines");
-                values.add(UsbSerialPort.FlowControl.DTR_DSR);
-                if (fc == UsbSerialPort.FlowControl.DTR_DSR) pos = names.size() - 1;
-            }
-            if (sfc.contains(UsbSerialPort.FlowControl.XON_XOFF)) {
-                names.add("XON/XOFF characters");
-                values.add(UsbSerialPort.FlowControl.XON_XOFF);
-                if (fc == UsbSerialPort.FlowControl.XON_XOFF) pos = names.size() - 1;
-            }
-            if (sfc.contains(UsbSerialPort.FlowControl.XON_XOFF_INLINE)) {
-                names.add("XON/XOFF characters");
-                values.add(UsbSerialPort.FlowControl.XON_XOFF_INLINE);
-                if (fc == UsbSerialPort.FlowControl.XON_XOFF_INLINE) pos = names.size() - 1;
-            }
-            AlertDialog.Builder builder = new AlertDialog.Builder(getActivity());
-            builder.setTitle("Flow Control");
-            builder.setSingleChoiceItems(names.toArray(new CharSequence[0]), pos, (dialog, which) -> {
-                dialog.dismiss();
-                try {
-                    flowControl = values.get(which);
-                    usbSerialPort.setFlowControl(flowControl);
-                    flowControlFilter = usbSerialPort.getFlowControl() == UsbSerialPort.FlowControl.XON_XOFF_INLINE ? new XonXoffFilter() : null;
-                    start();
-                } catch (Exception e) {
-                    status("Set flow control failed: "+e.getClass().getName()+" "+e.getMessage());
-                    flowControl = UsbSerialPort.FlowControl.NONE;
-                    flowControlFilter = null;
-                    start();
-                }
-            });
-            builder.setNegativeButton("Cancel", (dialog, which) -> dialog.dismiss());
-            builder.setNeutralButton("Info", (dialog, which) -> {
-                dialog.dismiss();
-                AlertDialog.Builder builder2 = new AlertDialog.Builder(getActivity());
-                builder2.setTitle("Flow Control").setMessage("If send is stopped by the external device, the 'Send' button changes to 'Blocked' icon.");
-                builder2.create().show();
-            });
-            builder.create().show();
-        }
-
-        public boolean showControlLines(boolean show) {
-            showControlLines = show;
-            start();
-            return showControlLines;
-        }
-
-        void start() {
-            if (showControlLines) {
-                try {
-                    EnumSet<UsbSerialPort.ControlLine> lines = usbSerialPort.getSupportedControlLines();
-                    rtsBtn.setVisibility(lines.contains(UsbSerialPort.ControlLine.RTS) ? View.VISIBLE : View.INVISIBLE);
-                    ctsBtn.setVisibility(lines.contains(UsbSerialPort.ControlLine.CTS) ? View.VISIBLE : View.INVISIBLE);
-                    dtrBtn.setVisibility(lines.contains(UsbSerialPort.ControlLine.DTR) ? View.VISIBLE : View.INVISIBLE);
-                    dsrBtn.setVisibility(lines.contains(UsbSerialPort.ControlLine.DSR) ? View.VISIBLE : View.INVISIBLE);
-                    cdBtn.setVisibility(lines.contains(UsbSerialPort.ControlLine.CD)   ? View.VISIBLE : View.INVISIBLE);
-                    riBtn.setVisibility(lines.contains(UsbSerialPort.ControlLine.RI)   ? View.VISIBLE : View.INVISIBLE);
-                } catch (IOException e) {
-                    showControlLines = false;
-                    status("getSupportedControlLines() failed: " + e.getMessage());
-                }
-            }
-            frame.setVisibility(showControlLines ? View.VISIBLE : View.GONE);
-            if(flowControl == UsbSerialPort.FlowControl.NONE) {
-                sendAllowed = true;
-                updateSendBtn(SendButtonState.Idle);
-            }
-
-            mainLooper.removeCallbacks(runnable);
-            if (showControlLines || flowControl != UsbSerialPort.FlowControl.NONE) {
-                run();
-            }
-        }
-
-        void stop() {
-            mainLooper.removeCallbacks(runnable);
-            sendAllowed = true;
-            updateSendBtn(SendButtonState.Idle);
-            rtsBtn.setChecked(false);
-            ctsBtn.setChecked(false);
-            dtrBtn.setChecked(false);
-            dsrBtn.setChecked(false);
-            cdBtn.setChecked(false);
-            riBtn.setChecked(false);
-        }
-
-        private void run() {
-            if (connected != Connected.True)
-                return;
-            try {
-                if (showControlLines) {
-                    EnumSet<UsbSerialPort.ControlLine> lines = usbSerialPort.getControlLines();
-                    if(rtsBtn.isChecked() != lines.contains(UsbSerialPort.ControlLine.RTS)) rtsBtn.setChecked(!rtsBtn.isChecked());
-                    if(ctsBtn.isChecked() != lines.contains(UsbSerialPort.ControlLine.CTS)) ctsBtn.setChecked(!ctsBtn.isChecked());
-                    if(dtrBtn.isChecked() != lines.contains(UsbSerialPort.ControlLine.DTR)) dtrBtn.setChecked(!dtrBtn.isChecked());
-                    if(dsrBtn.isChecked() != lines.contains(UsbSerialPort.ControlLine.DSR)) dsrBtn.setChecked(!dsrBtn.isChecked());
-                    if(cdBtn.isChecked()  != lines.contains(UsbSerialPort.ControlLine.CD))  cdBtn.setChecked(!cdBtn.isChecked());
-                    if(riBtn.isChecked()  != lines.contains(UsbSerialPort.ControlLine.RI))  riBtn.setChecked(!riBtn.isChecked());
-                }
-                if (flowControl != UsbSerialPort.FlowControl.NONE) {
-                    switch (usbSerialPort.getFlowControl()) {
-                        case DTR_DSR:         sendAllowed = usbSerialPort.getDSR(); break;
-                        case RTS_CTS:         sendAllowed = usbSerialPort.getCTS(); break;
-                        case XON_XOFF:        sendAllowed = usbSerialPort.getXON(); break;
-                        case XON_XOFF_INLINE: sendAllowed = flowControlFilter != null && flowControlFilter.getXON(); break;
-                        default:              sendAllowed = true;
-                    }
-                    updateSendBtn(sendAllowed ? SendButtonState.Idle : SendButtonState.Disabled);
-                }
-                mainLooper.postDelayed(runnable, refreshInterval);
-            } catch (IOException e) {
-                status("getControlLines() failed: " + e.getMessage() + " -> stopped control line refresh");
-            }
-        }
-
-        private void toggle(View v) {
-            ToggleButton btn = (ToggleButton) v;
-            if (connected != Connected.True) {
-                btn.setChecked(!btn.isChecked());
-                Toast.makeText(getActivity(), "not connected", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            String ctrl = "";
-            try {
-                if (btn.equals(rtsBtn)) { ctrl = "RTS"; usbSerialPort.setRTS(btn.isChecked()); }
-                if (btn.equals(dtrBtn)) { ctrl = "DTR"; usbSerialPort.setDTR(btn.isChecked()); }
-            } catch (IOException e) {
-                status("set" + ctrl + " failed: " + e.getMessage());
-            }
-        }
-
-    }
-
+    @Override public void onStart(){ super.onStart(); if(service!=null) service.attach(this); else getActivity().startService(new Intent(getActivity(), SerialService.class)); }
+    @Override public void onStop(){ if(service!=null && !getActivity().isChangingConfigurations()) service.detach(); super.onStop(); }
+    @Override public void onAttach(@NonNull Context context){ super.onAttach(context); getActivity().bindService(new Intent(getActivity(), SerialService.class), this, Context.BIND_AUTO_CREATE); }
+    @Override public void onDetach(){ try{ getActivity().unbindService(this); }catch(Exception ignored){} super.onDetach(); }
 }
