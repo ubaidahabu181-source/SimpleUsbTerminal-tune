@@ -1,154 +1,102 @@
 package de.kai_morich.simple_usb_terminal;
 
-import android.app.AlertDialog;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
+import android.os.Build;
 import android.os.Bundle;
-
-import androidx.annotation.NonNull;
-import androidx.fragment.app.Fragment;
-import androidx.fragment.app.ListFragment;
-import android.view.Menu;
-import android.view.MenuInflater;
-import android.view.MenuItem;
-import android.view.View;
-import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
-import android.widget.ListView;
-import android.widget.TextView;
 import android.widget.Toast;
-
-import com.hoho.android.usbserial.driver.UsbSerialDriver;
-import com.hoho.android.usbserial.driver.UsbSerialProber;
-
+import androidx.annotation.NonNull;
+import androidx.fragment.app.ListFragment;
 import java.util.ArrayList;
-import java.util.Locale;
 
 public class DevicesFragment extends ListFragment {
 
-    static class ListItem {
-        UsbDevice device;
-        int port;
-        UsbSerialDriver driver;
+    private static final String ACTION_USB_PERMISSION = "de.kai_morich.simple_usb_terminal.USB_PERMISSION";
+    private final ArrayList<UsbDevice> devices = new ArrayList<>();
+    private ArrayAdapter<UsbDevice> adapter;
 
-        ListItem(UsbDevice device, int port, UsbSerialDriver driver) {
-            this.device = device;
-            this.port = port;
-            this.driver = driver;
+    private final BroadcastReceiver receiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (ACTION_USB_PERMISSION.equals(intent.getAction())) {
+                boolean granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false);
+                if(granted) refresh();
+            }
+            refresh();
         }
-    }
+    };
 
-    private final ArrayList<ListItem> listItems = new ArrayList<>();
-    private ArrayAdapter<ListItem> listAdapter;
-    private int baudRate = 19200;
+    @Override public void onCreate(Bundle savedInstanceState) { super.onCreate(savedInstanceState); }
 
-    @Override
-    public void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setHasOptionsMenu(true);
-        listAdapter = new ArrayAdapter<ListItem>(getActivity(), 0, listItems) {
-            @NonNull
-            @Override
-            public View getView(int position, View view, @NonNull ViewGroup parent) {
-                ListItem item = listItems.get(position);
-                if (view == null)
-                    view = getActivity().getLayoutInflater().inflate(R.layout.device_list_item, parent, false);
-                TextView text1 = view.findViewById(R.id.text1);
-                TextView text2 = view.findViewById(R.id.text2);
-                if(item.driver == null)
-                    text1.setText("<no driver>");
-                else if(item.driver.getPorts().size() == 1)
-                    text1.setText(item.driver.getClass().getSimpleName().replace("SerialDriver",""));
-                else
-                    text1.setText(item.driver.getClass().getSimpleName().replace("SerialDriver","")+", Port "+item.port);
-                text2.setText(String.format(Locale.US, "Vendor %04X, Product %04X", item.device.getVendorId(), item.device.getProductId()));
-                return view;
+    @Override public void onActivityCreated(Bundle savedInstanceState) {
+        super.onActivityCreated(savedInstanceState);
+        adapter = new ArrayAdapter<UsbDevice>(getActivity(), android.R.layout.simple_list_item_1, devices){
+            @NonNull @Override public android.view.View getView(int position, android.view.View convertView, @NonNull android.view.ViewGroup parent){
+                android.view.View v = super.getView(position, convertView, parent);
+                UsbDevice d = devices.get(position);
+                android.widget.TextView tv = v.findViewById(android.R.id.text1);
+                tv.setText(d.getDeviceName()+" Vendor "+String.format("%04X", d.getVendorId())+" Product "+String.format("%04X", d.getProductId()));
+                return v;
             }
         };
+        setListAdapter(adapter);
     }
 
-    @Override
-    public void onActivityCreated(Bundle savedInstanceState) {
-        super.onActivityCreated(savedInstanceState);
-        setListAdapter(null);
-        View header = getActivity().getLayoutInflater().inflate(R.layout.device_list_header, null, false);
-        getListView().addHeaderView(header, null, false);
-        setEmptyText("<no USB devices found>");
-        ((TextView) getListView().getEmptyView()).setTextSize(18);
-        setListAdapter(listAdapter);
-    }
-
-    @Override
-    public void onCreateOptionsMenu(@NonNull Menu menu, MenuInflater inflater) {
-        inflater.inflate(R.menu.menu_devices, menu);
-    }
-
-    @Override
-    public void onResume() {
+    @Override public void onResume() {
         super.onResume();
+        IntentFilter f = new IntentFilter();
+        f.addAction(ACTION_USB_PERMISSION);
+        f.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        f.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getActivity().registerReceiver(receiver, f, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            getActivity().registerReceiver(receiver, f);
+        }
         refresh();
     }
 
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        int id = item.getItemId();
-        if(id == R.id.refresh) {
-            refresh();
-            return true;
-        } else if (id ==R.id.baud_rate) {
-            final String[] baudRates = getResources().getStringArray(R.array.baud_rates);
-            int pos = java.util.Arrays.asList(baudRates).indexOf(String.valueOf(baudRate));
-            AlertDialog.Builder builder = new AlertDialog.Builder(getActivity());
-            builder.setTitle("Baud rate");
-            builder.setSingleChoiceItems(baudRates, pos, new DialogInterface.OnClickListener() {
-                public void onClick(DialogInterface dialog, int item) {
-                    baudRate = Integer.parseInt(baudRates[item]);
-                    dialog.dismiss();
+    @Override public void onPause() { super.onPause(); getActivity().unregisterReceiver(receiver); }
+
+    void refresh(){
+        try{
+            UsbManager um = (UsbManager)getActivity().getSystemService(Context.USB_SERVICE);
+            devices.clear();
+            if(um!=null) devices.addAll(um.getDeviceList().values());
+            if(adapter!=null) adapter.notifyDataSetChanged();
+        }catch(Exception e){}
+    }
+
+    @Override public void onListItemClick(@NonNull android.widget.ListView l, @NonNull android.view.View v, int position, long id){
+        try{
+            UsbDevice device = devices.get(position);
+            UsbManager um = (UsbManager)getActivity().getSystemService(Context.USB_SERVICE);
+            if(!um.hasPermission(device)){
+                Intent piIntent = new Intent(ACTION_USB_PERMISSION);
+                PendingIntent pi;
+                if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S){
+                    pi = PendingIntent.getBroadcast(getActivity(), 0, piIntent, PendingIntent.FLAG_MUTABLE);
+                }else{
+                    pi = PendingIntent.getBroadcast(getActivity(), 0, piIntent, PendingIntent.FLAG_UPDATE_CURRENT);
                 }
-            });
-            builder.create().show();
-            return true;
-        } else {
-            return super.onOptionsItemSelected(item);
-        }
-    }
-
-    void refresh() {
-        UsbManager usbManager = (UsbManager) getActivity().getSystemService(Context.USB_SERVICE);
-        UsbSerialProber usbDefaultProber = UsbSerialProber.getDefaultProber();
-        UsbSerialProber usbCustomProber = CustomProber.getCustomProber();
-        listItems.clear();
-        for(UsbDevice device : usbManager.getDeviceList().values()) {
-            UsbSerialDriver driver = usbDefaultProber.probeDevice(device);
-            if(driver == null) {
-                driver = usbCustomProber.probeDevice(device);
+                um.requestPermission(device, pi);
+                Toast.makeText(getActivity(), "Requesting permission - check popup", Toast.LENGTH_LONG).show();
+                return;
             }
-            if(driver != null) {
-                for(int port = 0; port < driver.getPorts().size(); port++)
-                    listItems.add(new ListItem(device, port, driver));
-            } else {
-                listItems.add(new ListItem(device, 0, null));
-            }
-        }
-        listAdapter.notifyDataSetChanged();
-    }
-
-    @Override
-    public void onListItemClick(@NonNull ListView l, @NonNull View v, int position, long id) {
-        ListItem item = listItems.get(position-1);
-        if(item.driver == null) {
-            Toast.makeText(getActivity(), "no driver", Toast.LENGTH_SHORT).show();
-        } else {
             Bundle args = new Bundle();
-            args.putInt("device", item.device.getDeviceId());
-            args.putInt("port", item.port);
-            args.putInt("baud", baudRate);
-            Fragment fragment = new TerminalFragment();
-            fragment.setArguments(args);
-            getParentFragmentManager().beginTransaction().replace(R.id.fragment, fragment, "terminal").addToBackStack(null).commit();
+            args.putString("device", device.getDeviceName());
+            args.putInt("port", 0);
+            args.putInt("baud", 115200);
+            TerminalFragment frag = new TerminalFragment();
+            frag.setArguments(args);
+            getParentFragmentManager().beginTransaction().replace(R.id.fragment, frag, "terminal").addToBackStack(null).commit();
+        }catch(Exception e){
+            Toast.makeText(getActivity(), "Click error: "+e.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
-
 }
