@@ -60,7 +60,7 @@ public class TerminalFragment extends Fragment {
 
     // UI CLEAN
     private View pageGauges, pageGrid;
-    private GaugeView gaugeRpm, gaugeMap, gaugeAdv;
+    private GaugeView gaugeRpm, gaugeMap, gaugeAdv, gaugeDfco;
     private TextView dfcoLamp, liveCellInfo, statusText;
     private LinearLayout mapTableContainer;
     private Button btnBack, btnGet, btnSave, btnLoad;
@@ -98,6 +98,7 @@ public class TerminalFragment extends Fragment {
         gaugeRpm = view.findViewById(R.id.gaugeRpm);
         gaugeMap = view.findViewById(R.id.gaugeMap);
         gaugeAdv = view.findViewById(R.id.gaugeAdv);
+        gaugeDfco = view.findViewById(R.id.gaugeDfco);
         dfcoLamp = view.findViewById(R.id.dfcoLamp);
         liveCellInfo = view.findViewById(R.id.liveCellInfo);
         statusText = view.findViewById(R.id.statusText);
@@ -111,6 +112,7 @@ public class TerminalFragment extends Fragment {
         if(gaugeRpm!=null) gaugeRpm.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(gaugeMap!=null) gaugeMap.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(gaugeAdv!=null) gaugeAdv.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
+        if(gaugeDfco!=null) gaugeDfco.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
 
         if(btnGet!=null) btnGet.setOnClickListener(v-> send("$GET"));
         if(btnSave!=null) btnSave.setOnClickListener(v-> saveMapToPhone());
@@ -187,6 +189,11 @@ public class TerminalFragment extends Fragment {
                 if(gaugeRpm!=null) gaugeRpm.setValue(rpm, "RPM", rpm+" RPM", 0, 7000);
                 if(gaugeMap!=null) gaugeMap.setValue(map, "MAP", map+" kPa", 0, 100);
                 if(gaugeAdv!=null) gaugeAdv.setValue(adv, "ADV", adv+" deg", 0, 50);
+                // DFCO JADI GAUGE 4
+                if(gaugeDfco!=null){
+                    int dfcoVal = dfco ? 100 : 0;
+                    gaugeDfco.setValue(dfcoVal, "DFCO", dfco?"ON":"OFF", 0, 100);
+                }
                 if(dfcoLamp!=null){
                     dfcoLamp.setText(dfco?"DFCO ON":"DFCO OFF");
                     dfcoLamp.setTextColor(dfco?Color.parseColor("#00FFFF"):Color.parseColor("#555555"));
