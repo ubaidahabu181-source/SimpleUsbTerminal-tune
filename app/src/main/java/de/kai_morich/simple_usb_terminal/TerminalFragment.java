@@ -266,70 +266,66 @@ public class TerminalFragment extends Fragment {
     }
 
     private void openFilePicker(){ Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); try{ loadFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"File picker tidak tersedia",Toast.LENGTH_SHORT).show(); } }
-    private void loadMapFromUri(Uri uri){ try{ InputStream is=getActivity().getContentResolver().openInputStream(uri); BufferedReader reader=new BufferedReader(new InputStreamReader(is)); String line; int r=0; while((line=reader.readLine())!=null && r<16){ String[] parts=line.split(","); if(parts.length>=16){ for(int c=0;c<16;c++){ try{ advMap[r][c]=Integer.parseInt(parts[c].trim()); }catch(Exception e){} } r++; } } reader.close(); buildMapTable(); Toast.makeText(getContext(),"Loaded "+r+" rows",Toast.LENGTH_SHORT).show(); }catch(Exception e){ Toast.makeText(getContext(),"Load gagal: "+e.getMessage(),Toast.LENGTH_SHORT).show(); } }
-    private void saveMapToPhone(){ StringBuilder sb=new StringBuilder(); for(int r=0;r<16;r++){ for(int c=0;c<16;c++){ sb.append(advMap[r][c]); if(c<15) sb.append(","); } sb.append("\n"); } pendingSaveContent=sb.toString(); String fileName="ADV_MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".txt"; Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("text/plain"); intent.putExtra(Intent.EXTRA_TITLE, fileName); try{ saveFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"Save tidak support",Toast.LENGTH_SHORT).show(); } }
-    private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment(),Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
+    private void saveMapToPhone(){
+        // FORMAT KAYA ARDUINO IDE - BIAR GAMPANG PASTE
+        StringBuilder sb=new StringBuilder();
+        sb.append("// TARUNA TUNER V7.4 - IGNITION MAP BACKUP
+");
+        sb.append("// Date: "+new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date())+"
+");
+        sb.append("// Format: Copy paste langsung ke Arduino IDE
 
-    private void connect(){
-        try{
-            status("connecting... DIRECT");
-            UsbManager usbManager = (UsbManager) getActivity().getSystemService(Context.USB_SERVICE);
-            UsbDevice device=null;
-            for(UsbDevice v: usbManager.getDeviceList().values()) if(v.getDeviceId()==deviceId) { device=v; break; }
-            if(device==null) for(UsbDevice v: usbManager.getDeviceList().values()) if(UsbSerialProber.getDefaultProber().probeDevice(v)!=null) { device=v; deviceId=v.getDeviceId(); break; }
-            if(device==null){ status("no USB devices found - colok OTG"); return; }
-            if(!usbManager.hasPermission(device)){
-                Intent permIntent = new Intent(ACTION_USB_PERMISSION);
-                permIntent.setPackage(getActivity().getPackageName());
-                int flags = PendingIntent.FLAG_MUTABLE;
-                permissionIntent = PendingIntent.getBroadcast(getActivity(),0,permIntent,flags);
-                IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
-                try{ getActivity().registerReceiver(usbPermissionReceiver,filter,Context.RECEIVER_NOT_EXPORTED); receiverRegistered=true; }catch(Exception e){ getActivity().registerReceiver(usbPermissionReceiver,filter); receiverRegistered=true; }
-                usbManager.requestPermission(device,permissionIntent);
-                status("requesting permission - klik OK di popup");
-                return;
+");
+        sb.append("const uint8_t ignitionMap[16][16] PROGMEM = {
+");
+        for(int r=0;r<16;r++){
+            sb.append("  {");
+            for(int c=0;c<16;c++){
+                sb.append(String.format(Locale.US, "%2d", advMap[r][c]));
+                if(c<15) sb.append(", ");
             }
-            UsbDeviceConnection usbConnection = usbManager.openDevice(device);
-            if(usbConnection==null){ status("open failed - permission denied / busy"); return; }
-            UsbSerialPort usbSerialPort=null;
-            try{ usbSerialPort=UsbSerialProber.getDefaultProber().probeDevice(device).getPorts().get(portNum); }catch(Exception e){ usbSerialPort=UsbSerialProber.getDefaultProber().probeDevice(device).getPorts().get(0); }
-            if(usbSerialPort==null){ status("no driver for device"); return; }
-            usbSerialPort.open(usbConnection);
-            usbSerialPort.setParameters(115200, 8, 1, UsbSerialPort.PARITY_NONE);
-            try{ usbSerialPort.setDTR(false); }catch(Exception ignored){}
-            try{ usbSerialPort.setRTS(false); }catch(Exception ignored){}
-            currentPort=usbSerialPort; currentConnection=usbConnection;
-            status("CONNECTED CDC "+device.getVendorId()+":"+device.getProductId());
-            stopRead=false;
-            readThread = new Thread(() -> {
-                byte[] buf = new byte[4096];
-                while(!stopRead){
-                    try{
-                        int len = currentPort.read(buf, 500);
-                        if(len>0){
-                            byte[] data = Arrays.copyOf(buf, len);
-                            String chunk = new String(data);
-                            buffer += chunk;
-                            while(buffer.contains("*")){
-                                int idx = buffer.indexOf("*");
-                                if(idx<0) break;
-                                String line = buffer.substring(0, idx+1);
-                                buffer = buffer.substring(idx+1);
-                                line=line.trim();
-                                if(line.isEmpty()) continue;
-                                if(line.contains("$MAPR")) line = line.substring(line.indexOf("$MAPR"));
-                                else if(line.contains("$MAPDONE")) line = line.substring(line.indexOf("$MAPDONE"));
-                                else if(line.contains("$OK") && line.lastIndexOf("$OK")>0) line = line.substring(line.lastIndexOf("$OK"));
-                                String finalLine=line;
-                                if(getActivity()!=null) getActivity().runOnUiThread(()->handleLine(finalLine));
-                            }
-                        }
-                    }catch(Exception e){ if(!stopRead && getActivity()!=null) getActivity().runOnUiThread(()->status("read error: "+e.getMessage())); break; }
-                }
-            });
-            readThread.start();
-        }catch(Exception e){ status("connection failed: "+e.getMessage()); e.printStackTrace(); }
+            sb.append("}");
+            if(r<15) sb.append(",");
+            sb.append(" // Row "+r+" = MAP "+MAP_GRID[r]+" kPa
+");
+        }
+        sb.append("};
+
+");
+        sb.append("// RPM GRID
+");
+        sb.append("const uint16_t rpmGrid[16] = {");
+        for(int i=0;i<16;i++){ sb.append(RPM_GRID[i]); if(i<15) sb.append(", "); }
+        sb.append("};
+");
+        sb.append("// MAP GRID
+");
+        sb.append("const uint8_t mapGrid[16] = {");
+        for(int i=0;i<16;i++){ sb.append(MAP_GRID[i]); if(i<15) sb.append(", "); }
+        sb.append("};
+");
+        sb.append("
+// CSV Backup (untuk LOAD balik ke HP)
+");
+        sb.append("// CSV_START
+");
+        for(int r=0;r<16;r++){
+            for(int c=0;c<16;c++){ sb.append(advMap[r][c]); if(c<15) sb.append(","); }
+            sb.append("
+");
+        }
+        sb.append("// CSV_END
+");
+        pendingSaveContent=sb.toString();
+        String fileName="IGN_MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".h";
+        Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TITLE, fileName);
+        try{ saveFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"Save tidak support",Toast.LENGTH_SHORT).show(); }
     }
+    private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment()+" (Arduino format)",Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
+
 
     private final BroadcastReceiver usbPermissionReceiver = new BroadcastReceiver(){
         public void onReceive(Context context, Intent intent){
