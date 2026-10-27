@@ -45,6 +45,8 @@ public class TerminalFragment extends Fragment {
     private int[] RPM_GRID={500,800,1000,1200,1500,1800,2100,2400,2700,3000,3500,4000,4500,5000,6000,7000};
     private int[] MAP_GRID={20,25,30,35,40,45,50,55,60,65,70,75,80,85,92,100};
     private String buffer="";
+    private int mapRowIndex=0;
+    private boolean isGettingMap=false;
     private String pendingSaveContent="";
     private androidx.activity.result.ActivityResultLauncher<android.content.Intent> saveFileLauncher, loadFileLauncher;
 
@@ -69,8 +71,7 @@ public class TerminalFragment extends Fragment {
         }
         saveFileLauncher=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result->{ if(result.getResultCode()==android.app.Activity.RESULT_OK && result.getData()!=null){ Uri uri=result.getData().getData(); if(uri!=null) saveMapToUri(uri, pendingSaveContent); } });
         loadFileLauncher=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result->{ if(result.getResultCode()==android.app.Activity.RESULT_OK && result.getData()!=null){ Uri uri=result.getData().getData(); if(uri!=null) loadMapFromUri(uri); } });
-        int[][] base={{16,18,18,18,19,19,20,21,22,23,24,25,26,27,28,29},{16,15,16,18,19,20,22,23,24,25,26,27,28,29,30,31},{15,15,17,18,20,21,23,24,25,26,27,28,29,30,31,32},{15,15,17,19,21,23,24,25,26,27,28,29,30,31,32,33},{16,16,18,20,21,23,25,26,27,28,29,30,31,32,33,34},{17,17,19,20,22,24,25,26,27,28,29,30,31,32,33,34},{16,16,18,19,21,23,24,25,26,27,28,29,30,31,32,33},{15,15,17,18,20,22,23,24,25,26,27,28,29,30,31,32},{15,14,16,17,19,20,22,23,24,25,26,27,28,29,30,31},{14,14,15,17,18,20,21,22,23,24,25,26,27,28,29,30},{13,13,14,16,17,18,20,21,22,23,24,25,26,27,28,29},{12,12,13,15,16,17,19,20,21,22,23,24,25,26,27,28},{12,11,12,13,15,16,17,18,19,20,21,22,23,24,25,26},{11,11,12,13,14,15,17,18,19,20,21,22,23,24,25,26},{10,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24},{8,9,10,11,12,13,15,16,17,18,19,20,21,22,23,24}};
-        advMap=base;
+        for(int r=0;r<16;r++) for(int c=0;c<16;c++) advMap[r][c]=5; // AWAL 5 SEMUA - GET BARU ISI FIRMWARE
     }
 
     @Override public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState){
@@ -251,6 +252,29 @@ public class TerminalFragment extends Fragment {
             if(line.isEmpty()) continue;
             String clean=line.replace("*","").trim();
             status(clean);
+            // MAP DATA DARI FIRMWARE: 16 angka koma = 1 baris map
+            if(clean.matches("^\\s*\\d+.*")){
+                String[] parts = clean.replace("$","").split(",");
+                if(parts.length>=16){
+                    try{
+                        // cek apakah ini baris map (semua angka 0-50)
+                        boolean isMapRow=true;
+                        for(int c=0;c<16;c++){ int v=Integer.parseInt(parts[c].trim()); if(v<0||v>60) {isMapRow=false; break;} }
+                        if(isMapRow){
+                            int row = mapRowIndex;
+                            if(row<16){
+                                for(int c=0;c<16;c++) advMap[row][c]=Integer.parseInt(parts[c].trim());
+                                mapRowIndex++;
+                                if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable());
+                                if(mapRowIndex>=16){ isGettingMap=false; mapRowIndex=0; status("MAP LOADED FROM FIRMWARE"); }
+                            }
+                            continue;
+                        }
+                    }catch(Exception e){}
+                }
+            }
+            if(clean.equals("$GET")||clean.startsWith("$MAP_START")){ mapRowIndex=0; isGettingMap=true; status("GET MAP FROM ECU..."); continue; }
+
             int rpm=currentRpm, map=currentMap, adv=currentAdv;
             boolean found=false;
             if(clean.contains("RPM")){
