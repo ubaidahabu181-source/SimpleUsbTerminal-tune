@@ -1,131 +1,130 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="#121212">
+    android:background="#080808">
 
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="60dp"
-        android:background="#FF6D00"
-        android:text="TARUNA TUNER V7.4"
-        android:textColor="#FFFFFF"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:gravity="center_vertical"
-        android:paddingStart="16dp" />
-
-    <TextView
-        android:id="@+id/statusText"
-        android:layout_width="match_parent"
-        android:layout_height="30dp"
-        android:background="#212121"
-        android:text="DISCONNECTED"
-        android:textColor="#FFEB3B"
-        android:gravity="center"
-        android:textSize="12sp" />
-
-    <!-- 3 GAUGE -->
+    <!-- PAGE 1 : 3 GAUGE CLEAN RACE -->
     <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal"
-        android:gravity="center"
-        android:padding="16dp">
-
-        <de.kai_morich.simple_usb_terminal.GaugeView
-            android:id="@+id/rpmGauge"
-            android:layout_width="0dp"
-            android:layout_height="120dp"
-            android:layout_weight="1"
-            android:layout_margin="4dp" />
-
-        <de.kai_morich.simple_usb_terminal.GaugeView
-            android:id="@+id/mapGauge"
-            android:layout_width="0dp"
-            android:layout_height="120dp"
-            android:layout_weight="1"
-            android:layout_margin="4dp" />
-
-        <de.kai_morich.simple_usb_terminal.GaugeView
-            android:id="@+id/advGauge"
-            android:layout_width="0dp"
-            android:layout_height="120dp"
-            android:layout_weight="1"
-            android:layout_margin="4dp" />
-    </LinearLayout>
-
-    <!-- DFCO -->
-    <TextView
-        android:id="@+id/dfcoLamp"
-        android:layout_width="200dp"
-        android:layout_height="50dp"
-        android:layout_gravity="center"
-        android:background="#424242"
-        android:text="DFCO OFF"
-        android:textColor="#9E9E9E"
-        android:gravity="center"
-        android:textStyle="bold"
-        android:textSize="18sp"
-        android:layout_margin="16dp" />
-
-    <!-- BUTTONS -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:padding="8dp">
-
-        <Button
-            android:id="@+id/btnGetMap"
-            android:layout_width="0dp"
-            android:layout_height="60dp"
-            android:layout_weight="1"
-            android:text="GET MAP"
-            android:layout_margin="4dp" />
-
-        <Button
-            android:id="@+id/btnSetMap"
-            android:layout_width="0dp"
-            android:layout_height="60dp"
-            android:layout_weight="1"
-            android:text="SET MAP"
-            android:layout_margin="4dp" />
-
-        <Button
-            android:id="@+id/btnSaveTxt"
-            android:layout_width="0dp"
-            android:layout_height="60dp"
-            android:layout_weight="1"
-            android:text="SAVE TXT"
-            android:layout_margin="4dp" />
-
-        <Button
-            android:id="@+id/btnLoadTxt"
-            android:layout_width="0dp"
-            android:layout_height="60dp"
-            android:layout_weight="1"
-            android:text="LOAD TXT"
-            android:layout_margin="4dp" />
-    </LinearLayout>
-
-    <!-- HIDDEN OLD VIEWS FOR COMPATIBILITY -->
-    <TextView android:id="@+id/receive_text" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone" />
-    <TextView android:id="@+id/send_text" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone" />
-    <TextView android:id="@+id/rpmValue" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone" />
-    <TextView android:id="@+id/mapValue" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone" />
-    <TextView android:id="@+id/advValue" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone" />
-    <ScrollView android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone"><TextView android:layout_width="wrap_content" android:layout_height="wrap_content"/></ScrollView>
-
-    <!-- GRID CONTAINER (HIDDEN AT START) -->
-    <LinearLayout
-        android:id="@+id/gridContainer"
+        android:id="@+id/pageGauges"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:visibility="gone"
-        android:background="#121212" />
+        android:background="#0A0A0A"
+        android:gravity="center">
 
-</LinearLayout>
+        <!-- Header clean -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:text="TARUNA TUNER V7.4 - RACE DASHBOARD"
+            android:textColor="#00FFAA"
+            android:textSize="12sp"
+            android:gravity="center"
+            android:fontFamily="monospace"
+            android:background="#111111"/>
+
+        <!-- 3 GAUGE BIG CLEAN -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:padding="16dp">
+
+            <de.kai_morich.simple_usb_terminal.GaugeView
+                android:id="@+id/gaugeRpm"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_margin="8dp"/>
+
+            <de.kai_morich.simple_usb_terminal.GaugeView
+                android:id="@+id/gaugeMap"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_margin="8dp"/>
+
+            <de.kai_morich.simple_usb_terminal.GaugeView
+                android:id="@+id/gaugeAdv"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:layout_margin="8dp"/>
+
+        </LinearLayout>
+
+        <!-- DFCO + Status clean -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="80dp"
+            android:orientation="vertical"
+            android:gravity="center"
+            android:background="#111111"
+            android:padding="8dp">
+
+            <TextView
+                android:id="@+id/dfcoLamp"
+                android:layout_width="140dp"
+                android:layout_height="36dp"
+                android:text="DFCO OFF"
+                android:gravity="center"
+                android:textSize="14sp"
+                android:fontFamily="monospace"
+                android:background="@drawable/bg_dfco_off"
+                android:textColor="#555555"/>
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Disconnected - Plug OTG"
+                android:textColor="#00FF88"
+                android:textSize="10sp"
+                android:gravity="center"
+                android:fontFamily="monospace"
+                android:layout_marginTop="8dp"/>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- PAGE 2 : GRID TUNING -->
+    <LinearLayout
+        android:id="@+id/pageGrid"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="#0E0E0E"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:orientation="horizontal"
+            android:background="#1A1A1A"
+            android:gravity="center_vertical"
+            android:padding="8dp">
+            <Button android:id="@+id/btnBack" android:layout_width="wrap_content" android:layout_height="36dp" android:text="BACK" android:textSize="11sp"/>
+            <TextView android:id="@+id/liveCellInfo" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Live Cell" android:textColor="#FFEB3B" android:textSize="10sp" android:fontFamily="monospace" android:layout_marginStart="12dp"/>
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal" android:padding="6dp" android:gravity="center">
+            <Button android:id="@+id/btnGet" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="GET" android:layout_marginEnd="4dp" android:textSize="12sp"/>
+            <Button android:id="@+id/btnSave" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="SAVE TXT" android:layout_marginEnd="4dp" android:textSize="12sp"/>
+            <Button android:id="@+id/btnLoad" android:layout_width="0dp" android:layout_height="40dp" android:layout_weight="1" android:text="LOAD" android:textSize="12sp"/>
+        </LinearLayout>
+
+        <ScrollView android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:fillViewport="true">
+            <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content" android:fillViewport="true">
+                <LinearLayout android:id="@+id/mapTableContainer" android:layout_width="wrap_content" android:layout_height="wrap_content" android:orientation="vertical" android:padding="8dp"/>
+            </HorizontalScrollView>
+        </ScrollView>
+    </LinearLayout>
+
+    <!-- Hidden compat -->
+    <TextView android:id="@+id/receive_text" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone"/>
+    <TextView android:id="@+id/rpmValue" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone"/>
+    <TextView android:id="@+id/mapValue" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone"/>
+    <TextView android:id="@+id/advValue" android:layout_width="0dp" android:layout_height="0dp" android:visibility="gone"/>
+</FrameLayout>
