@@ -199,7 +199,10 @@ public class TerminalFragment extends Fragment {
                 cur.setBackground(gd); cur.setTextColor(Color.BLACK);
             }
             lastActiveRow=activeRow; lastActiveCol=activeCol;
-            if(liveCellInfo!=null && getActivity()!=null) getActivity().runOnUiThread(()->liveCellInfo.setText("Live Cell: RPM "+RPM_GRID[activeCol]+" / MAP "+MAP_GRID[activeRow]+" kPa -> Row "+activeRow+" Col "+activeCol+" = "+advMap[activeRow][activeCol]+" deg | Real ADV: "+currentAdv+" deg"));
+            if(liveCellInfo!=null && getActivity()!=null){
+                final int fRow=activeRow, fCol=activeCol, fAdv=currentAdv;
+                getActivity().runOnUiThread(()->liveCellInfo.setText("Live Cell: RPM "+RPM_GRID[fCol]+" / MAP "+MAP_GRID[fRow]+" kPa -> Row "+fRow+" Col "+fCol+" = "+advMap[fRow][fCol]+" deg | Real ADV: "+fAdv+" deg"));
+            }
         }catch(Exception e){}
     }
 
