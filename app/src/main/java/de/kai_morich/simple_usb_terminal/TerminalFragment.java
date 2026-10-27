@@ -1,15 +1,10 @@
-
 package de.kai_morich.simple_usb_terminal;
 
 import android.app.AlertDialog;
-import android.content.ComponentName;
 import android.content.Context;
-import android.content.Intent;
-import android.content.ServiceConnection;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
-import android.os.IBinder;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -20,25 +15,23 @@ import android.widget.TextView;
 import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.fragment.app.Fragment;
-import java.io.OutputStream;
-import java.text.SimpleDateFormat;
-import java.util.ArrayDeque;
-import java.util.Date;
-import java.util.Locale;
+import com.hoho.android.usbserial.driver.UsbSerialDriver;
+import com.hoho.android.usbserial.driver.UsbSerialPort;
+import com.hoho.android.usbserial.driver.UsbSerialProber;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbManager;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.concurrent.Executors;
 
-public class TerminalFragment extends Fragment implements ServiceConnection, SerialListener {
+public class TerminalFragment extends Fragment {
 
-    private enum Connected { False, Pending, True }
-    private Connected connected = Connected.False;
-    private String deviceAddress;
-    private SerialService service;
-    private boolean initialStart = true;
-    private String newline = "\r\n";
-
-    // UI
     private View pageGauges, pageGrid;
     private GaugeView gaugeRpm, gaugeMap, gaugeAdv;
     private TextView dfcoLamp, liveCellInfo, statusText;
@@ -53,12 +46,27 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     private int[] MAP_GRID={20,25,30,35,40,45,50,55,60,65,70,75,80,85,92,100};
     private String buffer="";
     private String pendingSaveContent="";
-    private androidx.activity.result.ActivityResultLauncher<Intent> saveFileLauncher, loadFileLauncher;
+    private androidx.activity.result.ActivityResultLauncher<android.content.Intent> saveFileLauncher, loadFileLauncher;
+
+    private UsbManager usbManager;
+    private UsbDevice device;
+    private UsbDeviceConnection connection;
+    private UsbSerialPort port;
+    private boolean running = false;
 
     @Override public void onCreate(Bundle savedInstanceState){
         super.onCreate(savedInstanceState);
         setRetainInstance(true);
-        if(getArguments()!=null) deviceAddress=getArguments().getString("device");
+        if(getArguments()!=null){
+            String devName = getArguments().getString("device");
+            usbManager = (UsbManager)getActivity().getSystemService(Context.USB_SERVICE);
+            for(UsbDevice d : usbManager.getDeviceList().values()){
+                if(d.getDeviceName().equals(devName)){ device = d; break; }
+            }
+            if(device==null && !usbManager.getDeviceList().isEmpty()){
+                device = usbManager.getDeviceList().values().iterator().next();
+            }
+        }
         saveFileLauncher=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result->{ if(result.getResultCode()==android.app.Activity.RESULT_OK && result.getData()!=null){ Uri uri=result.getData().getData(); if(uri!=null) saveMapToUri(uri, pendingSaveContent); } });
         loadFileLauncher=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result->{ if(result.getResultCode()==android.app.Activity.RESULT_OK && result.getData()!=null){ Uri uri=result.getData().getData(); if(uri!=null) loadMapFromUri(uri); } });
         int[][] base={{16,18,18,18,19,19,20,21,22,23,24,25,26,27,28,29},{16,15,16,18,19,20,22,23,24,25,26,27,28,29,30,31},{15,15,17,18,20,21,23,24,25,26,27,28,29,30,31,32},{15,15,17,19,21,23,24,25,26,27,28,29,30,31,32,33},{16,16,18,20,21,23,25,26,27,28,29,30,31,32,33,34},{17,17,19,20,22,24,25,26,27,28,29,30,31,32,33,34},{16,16,18,19,21,23,24,25,26,27,28,29,30,31,32,33},{15,15,17,18,20,22,23,24,25,26,27,28,29,30,31,32},{15,14,16,17,19,20,22,23,24,25,26,27,28,29,30,31},{14,14,15,17,18,20,21,22,23,24,25,26,27,28,29,30},{13,13,14,16,17,18,20,21,22,23,24,25,26,27,28,29},{12,12,13,15,16,17,19,20,21,22,23,24,25,26,27,28},{12,11,12,13,15,16,17,18,19,20,21,22,23,24,25,26},{11,11,12,13,14,15,17,18,19,20,21,22,23,24,25,26},{10,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24},{8,9,10,11,12,13,15,16,17,18,19,20,21,22,23,24}};
@@ -84,6 +92,62 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
         if(pageGrid!=null) pageGrid.setVisibility(View.GONE);
         updateGauges(currentRpm, currentMap, currentAdv, false);
         return view;
+    }
+
+    @Override public void onResume(){
+        super.onResume();
+        connectDirect();
+    }
+    @Override public void onPause(){
+        super.onPause();
+        disconnectDirect();
+    }
+
+    private void connectDirect(){
+        if(device==null){ status("No device"); return; }
+        if(usbManager==null) usbManager = (UsbManager)getActivity().getSystemService(Context.USB_SERVICE);
+        if(!usbManager.hasPermission(device)){ status("No permission - go back and ALLOW"); return; }
+        try{
+            UsbSerialDriver driver = UsbSerialProber.getDefaultProber().probeDevice(device);
+            if(driver==null){ status("No driver for "+device.getDeviceName()+" - trying CDC"); return; }
+            port = driver.getPorts().get(0);
+            connection = usbManager.openDevice(device);
+            if(connection==null){ status("Failed open connection"); return; }
+            port.open(connection);
+            port.setParameters(115200, 8, 1, UsbSerialPort.PARITY_NONE);
+            status("CONNECTED - "+driver.getClass().getSimpleName()+" "+device.getDeviceName());
+            running = true;
+            startReadThread();
+            send("$GET\n");
+        }catch(Exception e){
+            status("Connect failed: "+e.getMessage());
+            android.util.Log.e("TARUNA", "connect", e);
+        }
+    }
+    private void disconnectDirect(){
+        running = false;
+        try{ if(port!=null) port.close(); }catch(Exception e){}
+        try{ if(connection!=null) connection.close(); }catch(Exception e){}
+        port = null; connection = null;
+    }
+
+    private void startReadThread(){
+        Executors.newSingleThreadExecutor().execute(()->{
+            byte[] buf = new byte[256];
+            while(running && port!=null){
+                try{
+                    int len = port.read(buf, 200);
+                    if(len>0){
+                        byte[] data = new byte[len];
+                        System.arraycopy(buf,0,data,0,len);
+                        receive(data);
+                    }
+                }catch(Exception e){
+                    status("Read error: "+e.getMessage());
+                    break;
+                }
+            }
+        });
     }
 
     private void buildMapTable(){
@@ -135,7 +199,7 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
                 cur.setBackground(gd); cur.setTextColor(Color.BLACK);
             }
             lastActiveRow=activeRow; lastActiveCol=activeCol;
-            if(liveCellInfo!=null) liveCellInfo.setText("Live Cell: RPM "+RPM_GRID[activeCol]+" / MAP "+MAP_GRID[activeRow]+" kPa -> Row "+activeRow+" Col "+activeCol+" = "+advMap[activeRow][activeCol]+" deg | Real ADV: "+currentAdv+" deg");
+            if(liveCellInfo!=null && getActivity()!=null) getActivity().runOnUiThread(()->liveCellInfo.setText("Live Cell: RPM "+RPM_GRID[activeCol]+" / MAP "+MAP_GRID[activeRow]+" kPa -> Row "+activeRow+" Col "+activeCol+" = "+advMap[activeRow][activeCol]+" deg | Real ADV: "+currentAdv+" deg"));
         }catch(Exception e){}
     }
 
@@ -162,22 +226,18 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
     }
 
     private void send(String str){
-        if(connected!=Connected.True){ status("Not connected"); return; }
-        try{ service.write((str+newline).getBytes()); status("TX: "+str.trim()); }catch(Exception e){ status("TX Error: "+e.getMessage()); }
+        try{
+            if(port!=null) port.write(str.getBytes(), 200);
+            status("TX: "+str.trim());
+        }catch(Exception e){ status("TX Error: "+e.getMessage()); }
     }
 
-    private void openFilePicker(){ Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); try{ loadFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"File picker tidak tersedia",Toast.LENGTH_SHORT).show(); } }
+    private void openFilePicker(){ android.content.Intent intent=new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(android.content.Intent.CATEGORY_OPENABLE); intent.setType("*/*"); try{ loadFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"File picker tidak tersedia",Toast.LENGTH_SHORT).show(); } }
     private void loadMapFromUri(Uri uri){ try{ InputStream is=getActivity().getContentResolver().openInputStream(uri); BufferedReader reader=new BufferedReader(new InputStreamReader(is)); String line; int r=0; while((line=reader.readLine())!=null && r<16){ String[] parts=line.split(","); if(parts.length>=16){ for(int c=0;c<16;c++){ try{ advMap[r][c]=Integer.parseInt(parts[c].trim()); }catch(Exception e){} } r++; } } reader.close(); buildMapTable(); Toast.makeText(getContext(),"Loaded "+r+" rows",Toast.LENGTH_SHORT).show(); }catch(Exception e){ Toast.makeText(getContext(),"Load gagal: "+e.getMessage(),Toast.LENGTH_SHORT).show(); } }
-    private void saveMapToPhone(){ StringBuilder sb=new StringBuilder(); for(int r=0;r<16;r++){ for(int c=0;c<16;c++){ sb.append(advMap[r][c]); if(c<15) sb.append(","); } sb.append("\n"); } pendingSaveContent=sb.toString(); String fileName="ADV_MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".txt"; Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("text/plain"); intent.putExtra(Intent.EXTRA_TITLE, fileName); try{ saveFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"Save tidak support",Toast.LENGTH_SHORT).show(); } }
+    private void saveMapToPhone(){ StringBuilder sb=new StringBuilder(); for(int r=0;r<16;r++){ for(int c=0;c<16;c++){ sb.append(advMap[r][c]); if(c<15) sb.append(","); } sb.append("\n"); } pendingSaveContent=sb.toString(); String fileName="ADV_MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".txt"; android.content.Intent intent=new android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT); intent.addCategory(android.content.Intent.CATEGORY_OPENABLE); intent.setType("text/plain"); intent.putExtra(android.content.Intent.EXTRA_TITLE, fileName); try{ saveFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"Save tidak support",Toast.LENGTH_SHORT).show(); } }
     private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment(),Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
 
     public void status(String s){ if(statusText!=null && getActivity()!=null) getActivity().runOnUiThread(()->statusText.setText(s)); }
-
-    @Override public void onSerialConnect(){ status("CONNECTED - ECU ONLINE"); connected=Connected.True; send("$GET"); }
-    @Override public void onSerialConnectError(Exception e){ status("Connect Error: "+e.getMessage()); connected=Connected.False; }
-    @Override public void onSerialRead(byte[] data){ receive(data); }
-    @Override public void onSerialRead(ArrayDeque<byte[]> datas){ for(byte[] d: datas) receive(d); }
-    @Override public void onSerialIoError(Exception e){ status("IO Error: "+e.getMessage()); connected=Connected.False; }
 
     private void receive(byte[] data){
         buffer+=new String(data);
@@ -204,42 +264,4 @@ public class TerminalFragment extends Fragment implements ServiceConnection, Ser
             if(found){ boolean dfco=(map<30 && rpm>1600); updateGauges(rpm, map, adv, dfco); }
         }
     }
-
-    @Override public void onServiceConnected(ComponentName name, IBinder binder){ service=((SerialService.SerialBinder)binder).getService(); service.attach(this); if(initialStart && isResumed()){ initialStart=false; getActivity().runOnUiThread(this::connect); } }
-    @Override public void onServiceDisconnected(ComponentName name){ service=null; }
-
-    private void connect(){
-        try{
-            android.hardware.usb.UsbManager um = (android.hardware.usb.UsbManager)getActivity().getSystemService(android.content.Context.USB_SERVICE);
-            android.hardware.usb.UsbDevice device = null;
-            // Cari device berdasarkan deviceAddress atau ambil yang pertama
-            for(android.hardware.usb.UsbDevice d : um.getDeviceList().values()){
-                if(d.getDeviceName().equals(deviceAddress)){
-                    device = d; break;
-                }
-            }
-            if(device==null && !um.getDeviceList().isEmpty()){
-                device = um.getDeviceList().values().iterator().next();
-            }
-            if(device==null){ status("No USB device found"); return; }
-            if(!um.hasPermission(device)){
-                status("No USB permission for "+device.getDeviceName()+" - go back, re-plug OTG, and ALLOW");
-                return;
-            }
-            android.hardware.usb.UsbDeviceConnection conn = um.openDevice(device);
-            if(conn==null){ status("Failed to open USB connection - permission?"); return; }
-            com.hoho.android.usbserial.driver.UsbSerialDriver driver = com.hoho.android.usbserial.driver.UsbSerialProber.getDefaultProber().probeDevice(device);
-            if(driver==null){ status("No driver for "+device.getDeviceName()); return; }
-            com.hoho.android.usbserial.driver.UsbSerialPort port = driver.getPorts().get(0);
-            SerialSocket socket = new SerialSocket(getActivity().getApplicationContext(), conn, port);
-            service.connect(socket);
-            connected=Connected.Pending;
-            status("Connecting to "+device.getDeviceName()+" "+driver.getClass().getSimpleName()+"...");
-        }catch(Exception e){ status("Connect failed: "+e.getMessage()); android.util.Log.e("TARUNA", "connect failed", e); }
-    }
-
-    @Override public void onStart(){ super.onStart(); if(service!=null) service.attach(this); else getActivity().startService(new Intent(getActivity(), SerialService.class)); }
-    @Override public void onStop(){ if(service!=null && !getActivity().isChangingConfigurations()) service.detach(); super.onStop(); }
-    @Override public void onAttach(@NonNull Context context){ super.onAttach(context); getActivity().bindService(new Intent(getActivity(), SerialService.class), this, Context.BIND_AUTO_CREATE); }
-    @Override public void onDetach(){ try{ getActivity().unbindService(this); }catch(Exception ignored){} super.onDetach(); }
 }
