@@ -3,6 +3,7 @@ plugins {
 }
 
 android {
+    namespace 'de.kai_morich.simple_usb_terminal'
     compileSdk 33
     defaultConfig {
         applicationId "de.kai_morich.simple_usb_terminal"
