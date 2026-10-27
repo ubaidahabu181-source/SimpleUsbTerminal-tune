@@ -1,4 +1,3 @@
-
 package de.kai_morich.simple_usb_terminal;
 
 import android.app.AlertDialog;
@@ -31,9 +30,6 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
-import java.io.File;
-import java.io.FileOutputStream;
-import android.os.Environment;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.Locale;
@@ -52,7 +48,6 @@ public class TerminalFragment extends Fragment {
     private PendingIntent permissionIntent;
     private boolean receiverRegistered = false;
 
-    // GRID
     private int[] RPM_GRID = {500,700,900,1100,1300,1500,1800,2200,2600,3000,3500,4000,4500,5000,5750,6500};
     private int[] MAP_GRID = {20,25,30,35,40,45,50,55,60,65,70,75,80,85,92,100};
     private int[][] advMap = new int[16][16];
@@ -60,8 +55,7 @@ public class TerminalFragment extends Fragment {
     private int currentRpm = 0, currentMap = 45, currentAdv = 16;
     private int lastActiveRow=-1, lastActiveCol=-1;
     private String buffer = "";
-    private String pendingSaveContent = "";
-    // BLACKBOX BUFFER - 5 detik history @~250ms = 20 sample
+
     private static class Sample { long t; int rpm,map,adv; Sample(long t,int r,int m,int a){this.t=t;rpm=r;map=m;adv=a;} }
     private final ArrayDeque<Sample> history = new ArrayDeque<>();
     private final ArrayDeque<Sample> pendingPost = new ArrayDeque<>();
@@ -71,15 +65,14 @@ public class TerminalFragment extends Fragment {
     private int pendingRow=0, pendingCol=0;
     private int logCount = 0;
     private StringBuilder fullLog = new StringBuilder();
-    private TextView logTextView; // hidden compat
-    private Button btnShareLog, btnClearLog;
+    private String pendingSaveContent = "";
 
-    // UI CLEAN
     private View pageGauges, pageGrid;
     private GaugeView gaugeRpm, gaugeMap, gaugeAdv, gaugeDfco;
     private TextView dfcoLamp, liveCellInfo, statusText;
     private LinearLayout mapTableContainer;
     private Button btnBack, btnGet, btnSave, btnLoad;
+    private Button btnShareLog, btnClearLog;
 
     private ActivityResultLauncher<Intent> loadFileLauncher, saveFileLauncher;
 
@@ -87,22 +80,16 @@ public class TerminalFragment extends Fragment {
         super.onCreate(savedInstanceState);
         setRetainInstance(true);
         Bundle args = getArguments();
-        if(args!=null){
-            deviceId = args.getInt("device", -1);
-            portNum = args.getInt("port", 0);
-        }
-        for(int r=0;r<16;r++) for(int c=0;c<16;c++) advMap[r][c]=5; // AWAL 5 SEMUA
-
+        if(args!=null){ deviceId = args.getInt("device", -1); portNum = args.getInt("port", 0); }
+        for(int r=0;r<16;r++) for(int c=0;c<16;c++) advMap[r][c]=5;
         loadFileLauncher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
             if(result.getResultCode() == android.app.Activity.RESULT_OK && result.getData()!=null){
-                Uri uri = result.getData().getData();
-                if(uri!=null) loadMapFromUri(uri);
+                Uri uri = result.getData().getData(); if(uri!=null) loadMapFromUri(uri);
             }
         });
         saveFileLauncher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
             if(result.getResultCode() == android.app.Activity.RESULT_OK && result.getData()!=null){
-                Uri uri = result.getData().getData();
-                if(uri!=null) saveMapToUri(uri, pendingSaveContent);
+                Uri uri = result.getData().getData(); if(uri!=null) saveMapToUri(uri, pendingSaveContent);
             }
         });
     }
@@ -126,24 +113,17 @@ public class TerminalFragment extends Fragment {
         Button btnLog = view.findViewById(R.id.btnLog);
         btnShareLog = view.findViewById(R.id.btnShareLog);
         btnClearLog = view.findViewById(R.id.btnClearLog);
-        logTextView = view.findViewById(R.id.logText);
-        if(btnLog!=null){
-            btnLog.setOnClickListener(v-> quickLog());
-            btnLog.setOnLongClickListener(v->{ doLog(); return true; });
-        }
-        if(btnShareLog!=null) btnShareLog.setOnClickListener(v-> shareLog());
-        if(btnClearLog!=null) btnClearLog.setOnClickListener(v->{ fullLog.setLength(0); logCount=0; Toast.makeText(getContext(),"Log cleared",Toast.LENGTH_SHORT).show(); });
-
         if(btnBack!=null) btnBack.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE); if(pageGrid!=null) pageGrid.setVisibility(View.GONE); });
         if(gaugeRpm!=null) gaugeRpm.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(gaugeMap!=null) gaugeMap.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(gaugeAdv!=null) gaugeAdv.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(gaugeDfco!=null) gaugeDfco.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
-
         if(btnGet!=null) btnGet.setOnClickListener(v-> send("$GET"));
         if(btnSave!=null) btnSave.setOnClickListener(v-> saveMapToPhone());
         if(btnLoad!=null) btnLoad.setOnClickListener(v-> openFilePicker());
-
+        if(btnLog!=null){ btnLog.setOnClickListener(v-> quickLog()); btnLog.setOnLongClickListener(v->{ doLog(); return true; }); }
+        if(btnShareLog!=null) btnShareLog.setOnClickListener(v-> shareLog());
+        if(btnClearLog!=null) btnClearLog.setOnClickListener(v->{ fullLog.setLength(0); logCount=0; Toast.makeText(getContext(),"Log cleared",Toast.LENGTH_SHORT).show(); });
         buildMapTable();
         if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE);
         if(pageGrid!=null) pageGrid.setVisibility(View.GONE);
@@ -215,16 +195,8 @@ public class TerminalFragment extends Fragment {
                 if(gaugeRpm!=null) gaugeRpm.setValue(rpm, "RPM", rpm+" RPM", 0, 7000);
                 if(gaugeMap!=null) gaugeMap.setValue(map, "MAP", map+" kPa", 0, 100);
                 if(gaugeAdv!=null) gaugeAdv.setValue(adv, "ADV", adv+" deg", 0, 50);
-                // DFCO JADI GAUGE 4
-                if(gaugeDfco!=null){
-                    int dfcoVal = dfco ? 100 : 0;
-                    gaugeDfco.setValue(dfcoVal, "DFCO", dfco?"ON":"OFF", 0, 100);
-                }
-                if(dfcoLamp!=null){
-                    dfcoLamp.setText(dfco?"DFCO ON":"DFCO OFF");
-                    dfcoLamp.setTextColor(dfco?Color.parseColor("#00FFFF"):Color.parseColor("#555555"));
-                    try{ dfcoLamp.setBackgroundResource(dfco?R.drawable.bg_dfco_on:R.drawable.bg_dfco_off); }catch(Exception ex){ dfcoLamp.setBackgroundColor(dfco?Color.parseColor("#00FFAA"):Color.parseColor("#333333")); }
-                }
+                if(gaugeDfco!=null){ int dfcoVal = dfco ? 100 : 0; gaugeDfco.setValue(dfcoVal, "DFCO", dfco?"ON":"OFF", 0, 100); }
+                if(dfcoLamp!=null){ dfcoLamp.setText(dfco?"DFCO ON":"DFCO OFF"); }
                 updateActiveHighlight(rpm, map);
             }catch(Exception e){}
         });
@@ -244,20 +216,10 @@ public class TerminalFragment extends Fragment {
                 else if(orig.equals("$SAVE")) toSend = "$SAVE\r\n";
                 else if(orig.startsWith("$SET")) toSend = orig + "\r\n";
                 else { toSend = orig; if(!toSend.endsWith("\r\n")) toSend = toSend + "\r\n"; }
-
-                StringBuilder sb = new StringBuilder();
-                sb.append("// TARUNA MAP BACKUP\n");
-                for(int rr=0;rr<16;rr++){ for(int cc=0;cc<16;cc++){ sb.append(advMap[rr][cc]); if(cc<15) sb.append(","); } sb.append("\n"); }
-                pendingSaveContent = sb.toString();
-
                 byte[] bytes = toSend.getBytes();
                 status("TX: "+orig);
                 if(currentPort!=null){
-                    for(int i=0;i<bytes.length;i++){
-                        byte[] one = new byte[]{bytes[i]};
-                        currentPort.write(one, 300);
-                        Thread.sleep(5);
-                    }
+                    for(int i=0;i<bytes.length;i++){ byte[] one = new byte[]{bytes[i]}; currentPort.write(one, 300); Thread.sleep(5); }
                 }
                 Thread.sleep(25);
                 status(orig+" DIKIRIM - TUNGGU BALASAN...");
@@ -320,34 +282,26 @@ public class TerminalFragment extends Fragment {
 
     private void saveMapToPhone(){
         StringBuilder sb=new StringBuilder();
-        sb.append("PROGMEM = {
-");
+        sb.append("PROGMEM = {\n");
         for(int r=0;r<16;r++){
             sb.append("  {");
             for(int c=0;c<16;c++){
-                sb.append(String.format(java.util.Locale.US, "%2d", advMap[r][c]));
+                sb.append(String.format(Locale.US, "%2d", advMap[r][c]));
                 if(c<15) sb.append(", ");
             }
-            sb.append(" },
-");
+            sb.append(" },\n");
         }
-        sb.append("};
-
-");
-        sb.append("// RPM breakpoints
-");
+        sb.append("};\n\n");
+        sb.append("// RPM breakpoints\n");
         sb.append(" {");
         for(int i=0;i<16;i++){ sb.append(RPM_GRID[i]); if(i<15) sb.append(", "); }
-        sb.append("};
-");
-        sb.append("// KPA breakpoints
-");
+        sb.append("};\n");
+        sb.append("// KPA breakpoints\n");
         sb.append(" {");
         for(int i=0;i<16;i++){ sb.append(MAP_GRID[i]); if(i<15) sb.append(", "); }
-        sb.append("};
-");
+        sb.append("};\n");
         pendingSaveContent=sb.toString();
-        String fileName="MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(new Date())+".txt";
+        String fileName="MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".txt";
         Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("text/plain");
@@ -356,6 +310,104 @@ public class TerminalFragment extends Fragment {
     }
 
     private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment(),Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
+
+    private void doLog(){
+        if(getContext()==null) return;
+        int rIdx=0,cIdx=0;
+        for(int i=0;i<15;i++) if(currentMap>=MAP_GRID[i] && currentMap<MAP_GRID[i+1]){rIdx=i; break;}
+        for(int i=0;i<15;i++) if(currentRpm>=RPM_GRID[i] && currentRpm<RPM_GRID[i+1]){cIdx=i; break;}
+        if(currentRpm>=RPM_GRID[15]) cIdx=15;
+        if(currentMap>=MAP_GRID[15]) rIdx=15;
+        final int fr=rIdx, fc=cIdx;
+        EditText input=new EditText(getContext());
+        input.setHint("Misal: Ngempos, Ngelitik, Enak");
+        new AlertDialog.Builder(getContext()).setTitle("LOG @ RPM "+currentRpm+" MAP "+currentMap+" ADV "+currentAdv+" deg")
+            .setMessage("Cell: Row "+fr+" Col "+fc+" ["+MAP_GRID[fr]+"kPa / "+RPM_GRID[fc]+" RPM] = "+advMap[fr][fc]+" deg\n\nAkan simpan 1 detik SEBELUM + SESUDAH klik ke Download")
+            .setView(input)
+            .setPositiveButton("SIMPAN LOG",(d,w)->{
+                String note=input.getText().toString();
+                if(note.trim().isEmpty()) note="Aneh";
+                startLogWithPrePost(note, fr, fc);
+            })
+            .setNegativeButton("Batal",null)
+            .setNeutralButton("Quick LOG",(d,w)-> quickLog())
+            .show();
+    }
+    private void quickLog(){
+        int rIdx=0,cIdx=0;
+        for(int i=0;i<15;i++) if(currentMap>=MAP_GRID[i] && currentMap<MAP_GRID[i+1]){rIdx=i; break;}
+        for(int i=0;i<15;i++) if(currentRpm>=RPM_GRID[i] && currentRpm<RPM_GRID[i+1]){cIdx=i; break;}
+        if(currentRpm>=RPM_GRID[15]) cIdx=15;
+        if(currentMap>=MAP_GRID[15]) rIdx=15;
+        startLogWithPrePost("Quick", rIdx, cIdx);
+    }
+    private void startLogWithPrePost(String note, int r, int c){
+        pendingNote = note; pendingRow=r; pendingCol=c;
+        logTriggerTime = System.currentTimeMillis();
+        pendingPost.clear();
+        waitingPost = true;
+        status("LOG trigger @ "+currentRpm+" RPM - merekam 1 detik sesudah...");
+        Toast.makeText(getContext(),"LOG trigger - tunggu 1 detik sesudah",Toast.LENGTH_SHORT).show();
+    }
+    private void finishLogWithPost(){
+        waitingPost = false;
+        String time = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(new Date(logTriggerTime));
+        logCount++;
+        StringBuilder entry = new StringBuilder();
+        entry.append(String.format(Locale.US, "\n=== LOG #%d @ %s - %s ===\n", logCount, time, pendingNote));
+        entry.append(String.format(Locale.US, "Trigger: RPM %d MAP %d ADV %d deg | Row %d Col %d [%dkPa / %dRPM = %d deg]\n", currentRpm, currentMap, currentAdv, pendingRow, pendingCol, MAP_GRID[pendingRow], RPM_GRID[pendingCol], advMap[pendingRow][pendingCol]));
+        entry.append("--- 1 DETIK SEBELUM ---\n");
+        long cutoffBefore = logTriggerTime - 1000;
+        for(Sample s: history){ if(s.t >= cutoffBefore && s.t <= logTriggerTime){ entry.append(String.format(Locale.US, "  %dms: RPM %d MAP %d ADV %d\n", (int)(s.t-logTriggerTime), s.rpm, s.map, s.adv)); } }
+        entry.append("--- TRIGGER ---\n");
+        entry.append(String.format(Locale.US, "  0ms: RPM %d MAP %d ADV %d <-- TRIGGER\n", currentRpm, currentMap, currentAdv));
+        entry.append("--- 1 DETIK SESUDAH ---\n");
+        for(Sample s: pendingPost){ entry.append(String.format(Locale.US, "  +%dms: RPM %d MAP %d ADV %d\n", (int)(s.t-logTriggerTime), s.rpm, s.map, s.adv)); }
+        entry.append("=== END LOG ===\n");
+        fullLog.append(entry.toString());
+        saveLogToDownload(entry.toString());
+        status("LOG #"+logCount+" SAVED to Download");
+        Toast.makeText(getContext(),"LOG #"+logCount+" saved to Download",Toast.LENGTH_LONG).show();
+    }
+    private void saveLogToDownload(String content){
+        try{
+            String fileName = "BLACKBOX_LOG_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
+            java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
+            if(!downloadDir.exists()) downloadDir.mkdirs();
+            java.io.File file = new java.io.File(downloadDir, fileName);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(file, true);
+            fos.write(content.getBytes());
+            fos.close();
+            java.io.File fullFile = new java.io.File(downloadDir, "TARUNA_BLACKBOX_ALL.txt");
+            java.io.FileOutputStream fos2 = new java.io.FileOutputStream(fullFile, true);
+            fos2.write(content.getBytes());
+            fos2.close();
+        }catch(Exception e){
+            try{
+                String fileName = "BLACKBOX_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
+                java.io.File file = new java.io.File(getActivity().getExternalFilesDir(null), fileName);
+                java.io.FileOutputStream fos = new java.io.FileOutputStream(file);
+                fos.write(content.getBytes());
+                fos.close();
+            }catch(Exception ex){ status("Log save fail: "+ex.getMessage()); }
+        }
+    }
+    private void shareLog(){
+        if(fullLog.length()==0){ Toast.makeText(getContext(),"Belum ada log",Toast.LENGTH_SHORT).show(); return; }
+        Intent sendIntent = new Intent();
+        sendIntent.setAction(Intent.ACTION_SEND);
+        sendIntent.putExtra(Intent.EXTRA_TEXT, fullLog.toString());
+        sendIntent.setType("text/plain");
+        startActivity(Intent.createChooser(sendIntent, "Share Blackbox Log"));
+    }
+
+    public void status(String str){
+        if(statusText!=null && getActivity()!=null) getActivity().runOnUiThread(()->{
+            if(str.toLowerCase().contains("connected")){ statusText.setText("CONNECTED"); statusText.setTextColor(Color.parseColor("#00FF88")); }
+            else if(str.toLowerCase().contains("failed")||str.toLowerCase().contains("denied")||str.toLowerCase().contains("no usb")){ statusText.setText(str.toUpperCase()); statusText.setTextColor(Color.RED); }
+            else statusText.setText(str.toUpperCase());
+        });
+    }
 
     private void connect(){
         try{
@@ -439,15 +491,12 @@ public class TerminalFragment extends Fragment {
                 for(int i=0;i<p.length-1;i++){ if(p[i].trim().equals("RPM")) currentRpm=Integer.parseInt(p[i+1].trim()); if(p[i].trim().equals("MAP")) currentMap=Integer.parseInt(p[i+1].trim()); if(p[i].trim().equals("ADV")) currentAdv=Integer.parseInt(p[i+1].trim()); }
                 boolean dfco = (currentMap<30 && currentRpm>1600);
                 updateGauges(currentRpm, currentMap, currentAdv, dfco);
-                // Simpan ke blackbox history
                 long nowMs = System.currentTimeMillis();
                 history.addLast(new Sample(nowMs, currentRpm, currentMap, currentAdv));
                 while(history.size()>30) history.removeFirst();
                 if(waitingPost){
                     pendingPost.addLast(new Sample(nowMs, currentRpm, currentMap, currentAdv));
-                    if(nowMs - logTriggerTime >= 1000){
-                        finishLogWithPost();
-                    }
+                    if(nowMs - logTriggerTime >= 1000){ finishLogWithPost(); }
                 }
             }catch(Exception e){}
         } else if(clean.startsWith("$GRIDR,")){
@@ -472,124 +521,6 @@ public class TerminalFragment extends Fragment {
         } else if(clean.contains("MAPDONE")){ Toast.makeText(getContext(),"MAPDONE - Full map diterima!",Toast.LENGTH_LONG).show(); status("MAPDONE - FULL MAP DITERIMA"); if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable()); }
         else if(clean.contains("EEPROM")){ Toast.makeText(getContext(),"Cell saved to EEPROM!",Toast.LENGTH_SHORT).show(); status("EEPROM SAVED"); }
         else if(clean.contains("SAVE_DONE")||clean.contains("$OK,SAVE")||clean.toUpperCase().contains("SAVE OK")){ Toast.makeText(getContext(),"Map Saved to EEPROM!",Toast.LENGTH_LONG).show(); status("SAVE DONE"); }
-    }
-
-
-    // ===== BLACKBOX LOG SYSTEM - LONG PRESS REKAM 1 DETIK SEBELUM + SESUDAH =====
-    private void doLog(){
-        if(getContext()==null) return;
-        int rIdx=0,cIdx=0;
-        for(int i=0;i<15;i++) if(currentMap>=MAP_GRID[i] && currentMap<MAP_GRID[i+1]){rIdx=i; break;}
-        for(int i=0;i<15;i++) if(currentRpm>=RPM_GRID[i] && currentRpm<RPM_GRID[i+1]){cIdx=i; break;}
-        if(currentRpm>=RPM_GRID[15]) cIdx=15;
-        if(currentMap>=MAP_GRID[15]) rIdx=15;
-        final int fr=rIdx, fc=cIdx;
-        EditText input=new EditText(getContext());
-        input.setHint("Misal: Ngempos, Ngelitik, Enak");
-        new AlertDialog.Builder(getContext()).setTitle("LOG @ RPM "+currentRpm+" MAP "+currentMap+" ADV "+currentAdv+"°")
-            .setMessage("Cell: Row "+fr+" Col "+fc+" ["+MAP_GRID[fr]+"kPa / "+RPM_GRID[fc]+" RPM] = "+advMap[fr][fc]+"°\n\nAkan simpan 1 detik SEBELUM + SESUDAH klik ke Download")
-            .setView(input)
-            .setPositiveButton("SIMPAN LOG",(d,w)->{
-                String note=input.getText().toString();
-                if(note.trim().isEmpty()) note="Aneh";
-                startLogWithPrePost(note, fr, fc);
-            })
-            .setNegativeButton("Batal",null)
-            .setNeutralButton("Quick LOG",(d,w)-> quickLog())
-            .show();
-    }
-    
-    private void quickLog(){
-        int rIdx=0,cIdx=0;
-        for(int i=0;i<15;i++) if(currentMap>=MAP_GRID[i] && currentMap<MAP_GRID[i+1]){rIdx=i; break;}
-        for(int i=0;i<15;i++) if(currentRpm>=RPM_GRID[i] && currentRpm<RPM_GRID[i+1]){cIdx=i; break;}
-        if(currentRpm>=RPM_GRID[15]) cIdx=15;
-        if(currentMap>=MAP_GRID[15]) rIdx=15;
-        startLogWithPrePost("Quick", rIdx, cIdx);
-    }
-    
-    private void startLogWithPrePost(String note, int r, int c){
-        pendingNote = note;
-        pendingRow=r; pendingCol=c;
-        logTriggerTime = System.currentTimeMillis();
-        pendingPost.clear();
-        waitingPost = true;
-        status("LOG trigger @ "+currentRpm+" RPM - merekam 1 detik sesudah...");
-        Toast.makeText(getContext(),"LOG trigger - tunggu 1 detik sesudah",Toast.LENGTH_SHORT).show();
-    }
-    
-    private void finishLogWithPost(){
-        waitingPost = false;
-        String time = new SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(new Date(logTriggerTime));
-        logCount++;
-        StringBuilder entry = new StringBuilder();
-        entry.append(String.format(java.util.Locale.US, "\n=== LOG #%d @ %s - %s ===\n", logCount, time, pendingNote));
-        entry.append(String.format(java.util.Locale.US, "Trigger: RPM %d MAP %d ADV %d° | Row %d Col %d [%dkPa / %dRPM = %d°]\n", 
-            currentRpm, currentMap, currentAdv, pendingRow, pendingCol, MAP_GRID[pendingRow], RPM_GRID[pendingCol], advMap[pendingRow][pendingCol]));
-        entry.append("--- 1 DETIK SEBELUM (pre-trigger) ---\n");
-        long cutoffBefore = logTriggerTime - 1000;
-        for(Sample s: history){
-            if(s.t >= cutoffBefore && s.t <= logTriggerTime){
-                entry.append(String.format(java.util.Locale.US, "  %dms: RPM %d MAP %d ADV %d\n", (int)(s.t-logTriggerTime), s.rpm, s.map, s.adv));
-            }
-        }
-        entry.append("--- TRIGGER SAAT INI ---\n");
-        entry.append(String.format(java.util.Locale.US, "  0ms: RPM %d MAP %d ADV %d <-- TRIGGER\n", currentRpm, currentMap, currentAdv));
-        entry.append("--- 1 DETIK SESUDAH (post-trigger) ---\n");
-        for(Sample s: pendingPost){
-            entry.append(String.format(java.util.Locale.US, "  +%dms: RPM %d MAP %d ADV %d\n", (int)(s.t-logTriggerTime), s.rpm, s.map, s.adv));
-        }
-        entry.append("=== END LOG ===\n");
-        fullLog.append(entry.toString());
-        // Save to Download folder
-        saveLogToDownload(entry.toString(), time);
-        status("LOG #"+logCount+" SAVED to Download");
-        Toast.makeText(getContext(),"LOG #"+logCount+" saved to Download folder",Toast.LENGTH_LONG).show();
-    }
-
-    private void saveLogToDownload(String content, String timeStr){
-        try{
-            String fileName = "BLACKBOX_LOG_"+new SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
-            // Coba Download folder public
-            File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if(!downloadDir.exists()) downloadDir.mkdirs();
-            File file = new File(downloadDir, fileName);
-            FileOutputStream fos = new FileOutputStream(file, true);
-            fos.write(content.getBytes());
-            fos.close();
-            // Also append to full log file
-            File fullFile = new File(downloadDir, "TARUNA_BLACKBOX_ALL.txt");
-            FileOutputStream fos2 = new FileOutputStream(fullFile, true);
-            fos2.write(content.getBytes());
-            fos2.close();
-        }catch(Exception e){
-            // Fallback ke internal storage
-            try{
-                String fileName = "BLACKBOX_"+new SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
-                File file = new File(getActivity().getExternalFilesDir(null), fileName);
-                FileOutputStream fos = new FileOutputStream(file);
-                fos.write(content.getBytes());
-                fos.close();
-                Toast.makeText(getContext(),"Saved to "+file.getAbsolutePath(),Toast.LENGTH_LONG).show();
-            }catch(Exception ex){ status("Log save fail: "+ex.getMessage()); }
-        }
-    }
-
-    private void shareLog(){
-        if(fullLog.length()==0){ Toast.makeText(getContext(),"Belum ada log",Toast.LENGTH_SHORT).show(); return; }
-        Intent sendIntent = new Intent();
-        sendIntent.setAction(Intent.ACTION_SEND);
-        sendIntent.putExtra(Intent.EXTRA_TEXT, fullLog.toString());
-        sendIntent.setType("text/plain");
-        startActivity(Intent.createChooser(sendIntent, "Share Blackbox Log"));
-    }
-
-    public void status(String str){
-        if(statusText!=null && getActivity()!=null) getActivity().runOnUiThread(()->{
-            if(str.toLowerCase().contains("connected")){ statusText.setText("CONNECTED"); statusText.setTextColor(Color.parseColor("#00FF88")); }
-            else if(str.toLowerCase().contains("failed")||str.toLowerCase().contains("denied")||str.toLowerCase().contains("no usb")){ statusText.setText(str.toUpperCase()); statusText.setTextColor(Color.RED); }
-            else statusText.setText(str.toUpperCase());
-        });
     }
 
     @Override public void onDestroy(){ super.onDestroy(); try{ stopRead=true; if(readThread!=null) readThread.interrupt(); }catch(Exception e){} try{ if(currentPort!=null) currentPort.close(); }catch(Exception e){} try{ if(currentConnection!=null) currentConnection.close(); }catch(Exception e){} try{ if(receiverRegistered) getActivity().unregisterReceiver(usbPermissionReceiver); }catch(Exception e){} }
