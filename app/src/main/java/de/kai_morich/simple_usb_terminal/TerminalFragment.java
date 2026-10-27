@@ -85,7 +85,7 @@ public class TerminalFragment extends Fragment {
         if(gaugeAdv!=null) gaugeAdv.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); });
         if(gaugeRpm!=null) gaugeRpm.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); });
         if(gaugeMap!=null) gaugeMap.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); });
-        if(btnGet!=null) btnGet.setOnClickListener(v-> send("$GET\n"));
+        if(btnGet!=null) btnGet.setOnClickListener(v->{ mapRowIndex=0; isGettingMap=true; status("GET MAP FROM ECU..."); send("$GET\r\n"); });
         if(btnSave!=null) btnSave.setOnClickListener(v-> saveMapToPhone());
         if(btnLoad!=null) btnLoad.setOnClickListener(v-> openFilePicker());
         buildMapTable();
@@ -252,28 +252,41 @@ public class TerminalFragment extends Fragment {
             if(line.isEmpty()) continue;
             String clean=line.replace("*","").trim();
             status(clean);
-            // MAP DATA DARI FIRMWARE: 16 angka koma = 1 baris map
-            if(clean.matches("^\\s*\\d+.*")){
-                String[] parts = clean.replace("$","").split(",");
-                if(parts.length>=16){
-                    try{
-                        // cek apakah ini baris map (semua angka 0-50)
-                        boolean isMapRow=true;
-                        for(int c=0;c<16;c++){ int v=Integer.parseInt(parts[c].trim()); if(v<0||v>60) {isMapRow=false; break;} }
-                        if(isMapRow){
-                            int row = mapRowIndex;
-                            if(row<16){
-                                for(int c=0;c<16;c++) advMap[row][c]=Integer.parseInt(parts[c].trim());
-                                mapRowIndex++;
-                                if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable());
-                                if(mapRowIndex>=16){ isGettingMap=false; mapRowIndex=0; status("MAP LOADED FROM FIRMWARE"); }
-                            }
-                            continue;
-                        }
-                    }catch(Exception e){}
+            // MAP DATA DARI FIRMWARE - SUPPORT: 16,18,18... ATAU $MAP,0,16,18... ATAU $MAP_START
+            try{
+                // Bersihkan $ dan ambil semua angka
+                String numsOnly = clean.replace("$","").replace("MAP","").replace("ADV","").replace("RPM","").trim();
+                // Jika ada 16 angka koma, anggap baris map
+                String[] parts = numsOnly.split(",");
+                java.util.ArrayList<Integer> vals = new java.util.ArrayList<>();
+                for(String p: parts){
+                    p=p.trim();
+                    if(p.isEmpty()) continue;
+                    try{ vals.add(Integer.parseInt(p.replaceAll("[^0-9-]",""))); }catch(Exception e){}
                 }
-            }
-            if(clean.equals("$GET")||clean.startsWith("$MAP_START")){ mapRowIndex=0; isGettingMap=true; status("GET MAP FROM ECU..."); continue; }
+                if(vals.size()>=16){
+                    // Jika 16+ angka dan semua 0-60, ini baris map
+                    boolean isMapRow = true;
+                    for(int i=0;i<16;i++){ int v=vals.get(i); if(v<0||v>60){ isMapRow=false; break; } }
+                    // Juga cek: jika isGettingMap atau baris pertama semua 5 sebelumnya, terima sebagai map
+                    if(isMapRow){
+                        int row = mapRowIndex;
+                        // Kalau firmware kirim dengan index di depan: 0,16,18... -> 17 angka, angka pertama = index baris
+                        int startIdx = 0;
+                        if(vals.size()==17) startIdx=1; // skip index
+                        if(row<16){
+                            for(int c=0;c<16;c++) advMap[row][c]=vals.get(c+startIdx);
+                            mapRowIndex++;
+                            if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable());
+                            status("MAP ROW "+row+" LOADED: "+vals.subList(startIdx, startIdx+4)+"...");
+                            if(mapRowIndex>=16){ isGettingMap=false; mapRowIndex=0; status("MAP LOADED FROM FIRMWARE - 16 ROWS OK"); }
+                        }
+                        continue;
+                    }
+                }
+            }catch(Exception e){}
+            if(clean.equals("$GET")||clean.toUpperCase().contains("MAP_START")||clean.toUpperCase().contains("$GET_OK")){ mapRowIndex=0; isGettingMap=true; status("GET MAP FROM ECU..."); continue; }
+            if(clean.toUpperCase().contains("MAP_END")||clean.toUpperCase().contains("$GET_END")){ isGettingMap=false; mapRowIndex=0; status("MAP END"); continue; }
 
             int rpm=currentRpm, map=currentMap, adv=currentAdv;
             boolean found=false;
