@@ -58,16 +58,19 @@ public class TerminalFragment extends Fragment {
     private UsbSerialPort port;
     private boolean running = false;
 
-    // BLACKBOX - FORMAT BARU CUMA RPM,KPA,ADV (NO MILLIS!)
     private static class Sample { int rpm,map,adv; Sample(int r,int m,int a){rpm=r;map=m;adv=a;} }
     private final ArrayDeque<Sample> history = new ArrayDeque<>();
     private final ArrayDeque<Sample> pendingPost = new ArrayDeque<>();
     private boolean waitingPost = false;
     private long logTriggerTime = 0;
     private String pendingNote = "";
-    private int pendingRow=0, pendingCol=0;
     private int logCount = 0;
-    private StringBuilder fullLog = new StringBuilder();
+
+    private boolean isContinuousLogging = false;
+    private File continuousFile = null;
+    private FileOutputStream continuousFos = null;
+    private String continuousFileName = "";
+    private Button btnLog;
 
     @Override public void onCreate(Bundle savedInstanceState){
         super.onCreate(savedInstanceState);
@@ -95,9 +98,7 @@ public class TerminalFragment extends Fragment {
         dfcoLamp=view.findViewById(R.id.dfcoLamp); mapTableContainer=view.findViewById(R.id.mapTableContainer);
         liveCellInfo=view.findViewById(R.id.liveCellInfo); statusText=view.findViewById(R.id.statusText);
         btnBack=view.findViewById(R.id.btnBack); btnGet=view.findViewById(R.id.btnGet); btnSave=view.findViewById(R.id.btnSave); btnLoad=view.findViewById(R.id.btnLoad);
-        Button btnLog = view.findViewById(R.id.btnLog);
-        Button btnShareLog = view.findViewById(R.id.btnShareLog);
-        Button btnClearLog = view.findViewById(R.id.btnClearLog);
+        btnLog = view.findViewById(R.id.btnLog);
         if(btnBack!=null) btnBack.setOnClickListener(v->{ pageGauges.setVisibility(View.VISIBLE); pageGrid.setVisibility(View.GONE); });
         if(gaugeAdv!=null) gaugeAdv.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(gaugeRpm!=null) gaugeRpm.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
@@ -106,11 +107,15 @@ public class TerminalFragment extends Fragment {
         if(btnSave!=null) btnSave.setOnClickListener(v-> saveMapToPhone());
         if(btnLoad!=null) btnLoad.setOnClickListener(v-> openFilePicker());
         if(btnLog!=null){
-            btnLog.setOnClickListener(v-> quickLog());
-            btnLog.setOnLongClickListener(v->{ doLog(); return true; });
+            btnLog.setOnClickListener(v-> {
+                if(isContinuousLogging){
+                    stopContinuousLog();
+                } else {
+                    showContinuousLogDialog();
+                }
+            });
+            btnLog.setOnLongClickListener(v->{ doFastLog(); return true; });
         }
-        if(btnShareLog!=null) btnShareLog.setOnClickListener(v-> shareLog());
-        if(btnClearLog!=null) btnClearLog.setOnClickListener(v->{ fullLog.setLength(0); logCount=0; Toast.makeText(getContext(),"Log cleared",Toast.LENGTH_SHORT).show(); });
         buildMapTable();
         if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE);
         if(pageGrid!=null) pageGrid.setVisibility(View.GONE);
@@ -138,7 +143,10 @@ public class TerminalFragment extends Fragment {
             }catch(Exception e){ status("Conn err: "+e.getMessage()); }
         });
     }
-    private void disconnectDirect(){ running=false; try{ if(port!=null) port.close(); }catch(Exception e){} try{ if(connection!=null) connection.close(); }catch(Exception e){} }
+    private void disconnectDirect(){ 
+        if(isContinuousLogging) stopContinuousLog();
+        running=false; try{ if(port!=null) port.close(); }catch(Exception e){} try{ if(connection!=null) connection.close(); }catch(Exception e){} 
+    }
     private void readLoop(){
         byte[] buf=new byte[256];
         while(running){
@@ -214,17 +222,33 @@ public class TerminalFragment extends Fragment {
                     dfcoLamp.setText(dfco?"DFCO ON":"DFCO OFF");
                     dfcoLamp.setTextColor(dfco?Color.parseColor("#00FFFF"):Color.parseColor("#555555"));
                 }
+                if(btnLog!=null){
+                    if(isContinuousLogging){
+                        btnLog.setText("STOP LOG");
+                        btnLog.setBackgroundColor(Color.RED);
+                    } else {
+                        btnLog.setText("LOG");
+                        btnLog.setBackgroundColor(Color.parseColor("#2196F3"));
+                    }
+                }
                 updateActiveHighlight(rpm, map);
             }catch(Exception e){}
         });
-        // Simpan ke history buat blackbox (max 20 sample = 5 detik)
         history.add(new Sample(rpm, map, adv));
-        if(history.size()>20) history.poll();
+        if(history.size()>40) history.poll();
+
         if(waitingPost){
             pendingPost.add(new Sample(rpm, map, adv));
-            if(System.currentTimeMillis() - logTriggerTime >= 1000){
-                finishLogWithPost();
+            if(System.currentTimeMillis() - logTriggerTime >= 2000){
+                finishFastLog();
             }
+        }
+
+        if(isContinuousLogging && continuousFos!=null){
+            try{
+                String line = rpm+","+map+","+adv+"\n";
+                continuousFos.write(line.getBytes());
+            }catch(Exception e){}
         }
     }
 
@@ -274,103 +298,99 @@ public class TerminalFragment extends Fragment {
         }
     }
 
-    // BLACKBOX LOG - FORMAT BARU CUMA RPM,KPA,ADV (NO MILLIS!) SESUAI REQUEST BOS!
-    private void doLog(){
-        int rIdx=0,cIdx=0;
-        for(int i=0;i<15;i++) if(currentMap>=MAP_GRID[i] && currentMap<MAP_GRID[i+1]){rIdx=i; break;}
-        for(int i=0;i<15;i++) if(currentRpm>=RPM_GRID[i] && currentRpm<RPM_GRID[i+1]){cIdx=i; break;}
-        if(currentRpm>=RPM_GRID[15]) cIdx=15;
-        if(currentMap>=MAP_GRID[15]) rIdx=15;
-        final int fr=rIdx, fc=cIdx;
+    private void showContinuousLogDialog(){
+        if(getContext()==null) return;
         EditText input=new EditText(getContext());
-        input.setHint("Misal: Ngempos, Ngelitik, Enak");
-        new AlertDialog.Builder(getContext()).setTitle("LOG @ RPM "+currentRpm+" MAP "+currentMap+" ADV "+currentAdv+"°")
-            .setMessage("Cell: Row "+fr+" Col "+fc+" ["+MAP_GRID[fr]+"kPa / "+RPM_GRID[fc]+" RPM] = "+advMap[fr][fc]+"°\n\nAkan simpan 1 detik SEBELUM + SESUDAH klik")
+        String defaultName = "TUNE_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
+        input.setText(defaultName);
+        input.setHint("Nama file .txt");
+        new AlertDialog.Builder(getContext())
+            .setTitle("Long Log - Nama File")
+            .setMessage("Log akan ditulis terus sampai klik STOP\nFolder: Download/tune_log/")
             .setView(input)
-            .setPositiveButton("SIMPAN LOG",(d,w)->{
-                String note=input.getText().toString();
-                if(note.trim().isEmpty()) note="Log";
-                startLogWithPrePost(note, fr, fc);
+            .setPositiveButton("START LOG",(d,w)->{
+                String name=input.getText().toString().trim();
+                if(name.isEmpty()) name=defaultName;
+                if(!name.toLowerCase().endsWith(".txt")) name+=".txt";
+                startContinuousLog(name);
             })
             .setNegativeButton("Batal",null)
-            .setNeutralButton("Quick LOG",(d,w)-> quickLog())
             .show();
     }
-    
-    private void quickLog(){
-        int rIdx=0,cIdx=0;
-        for(int i=0;i<15;i++) if(currentMap>=MAP_GRID[i] && currentMap<MAP_GRID[i+1]){rIdx=i; break;}
-        for(int i=0;i<15;i++) if(currentRpm>=RPM_GRID[i] && currentRpm<RPM_GRID[i+1]){cIdx=i; break;}
-        if(currentRpm>=RPM_GRID[15]) cIdx=15;
-        if(currentMap>=MAP_GRID[15]) rIdx=15;
-        startLogWithPrePost("Quick", rIdx, cIdx);
+
+    private void startContinuousLog(String fileName){
+        try{
+            File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            File tuneLogDir = new File(downloadDir, "tune_log");
+            if(!tuneLogDir.exists()) tuneLogDir.mkdirs();
+            continuousFile = new File(tuneLogDir, fileName);
+            continuousFos = new FileOutputStream(continuousFile, false);
+            continuousFos.write("RPM,MAP,ADV\n".getBytes());
+            isContinuousLogging = true;
+            continuousFileName = fileName;
+            if(btnLog!=null) getActivity().runOnUiThread(()->{ btnLog.setText("STOP LOG"); btnLog.setBackgroundColor(Color.RED); });
+            status("Long Log START: "+fileName);
+            Toast.makeText(getContext(),"START LOG: "+fileName+"\nFolder tune_log",Toast.LENGTH_LONG).show();
+        }catch(Exception e){
+            status("Log START fail: "+e.getMessage());
+            Toast.makeText(getContext(),"Gagal START: "+e.getMessage(),Toast.LENGTH_LONG).show();
+        }
     }
-    
-    private void startLogWithPrePost(String note, int r, int c){
-        pendingNote = note;
-        pendingRow=r; pendingCol=c;
+
+    private void stopContinuousLog(){
+        try{
+            if(continuousFos!=null){ continuousFos.flush(); continuousFos.close(); continuousFos=null; }
+            isContinuousLogging = false;
+            status("Long Log STOP: "+continuousFileName+" SAVED");
+            Toast.makeText(getContext(),"STOP LOG SAVED:\nDownload/tune_log/"+continuousFileName,Toast.LENGTH_LONG).show();
+            if(btnLog!=null) getActivity().runOnUiThread(()->{ btnLog.setText("LOG"); btnLog.setBackgroundColor(Color.parseColor("#2196F3")); });
+        }catch(Exception e){
+            status("Log STOP fail: "+e.getMessage());
+        }
+    }
+
+    private void doFastLog(){
+        if(isContinuousLogging){
+            Toast.makeText(getContext(),"Stop Long Log dulu!",Toast.LENGTH_SHORT).show();
+            return;
+        }
         logTriggerTime = System.currentTimeMillis();
         pendingPost.clear();
         waitingPost = true;
-        status("LOG trigger @ "+currentRpm+" RPM - merekam 1 detik sesudah...");
-        Toast.makeText(getContext(),"LOG trigger - tunggu 1 detik sesudah",Toast.LENGTH_SHORT).show();
+        status("Fast Log trigger - merekam 2 detik sesudah...");
+        Toast.makeText(getContext(),"FAST LOG - tunggu 2 detik sesudah",Toast.LENGTH_SHORT).show();
     }
     
-    private void finishLogWithPost(){
+    private void finishFastLog(){
         waitingPost = false;
         logCount++;
-        // FORMAT BARU: CUMA RPM,MAP,ADV (NO MILLIS) - URUTAN ATAS KE BAWAH!
         StringBuilder entry = new StringBuilder();
-        entry.append("RPM,MAP,ADV\n"); // Header CSV simple!
-        // 1 detik sebelum
+        entry.append("RPM,MAP,ADV\n");
+        int skip = Math.max(0, history.size() - 20);
+        int idx=0;
         for(Sample s: history){
-            entry.append(s.rpm).append(",").append(s.map).append(",").append(s.adv).append("\n");
+            if(idx>=skip){
+                entry.append(s.rpm).append(",").append(s.map).append(",").append(s.adv).append("\n");
+            }
+            idx++;
         }
-        // Trigger saat ini
-        entry.append(currentRpm).append(",").append(currentMap).append(",").append(currentAdv).append("\n");
-        // 1 detik sesudah
         for(Sample s: pendingPost){
             entry.append(s.rpm).append(",").append(s.map).append(",").append(s.adv).append("\n");
         }
-        fullLog.append(entry.toString());
-        saveLogToDownload(entry.toString());
-        status("LOG #"+logCount+" SAVED");
-        Toast.makeText(getContext(),"LOG #"+logCount+" saved: "+pendingNote,Toast.LENGTH_LONG).show();
-    }
-
-    private void saveLogToDownload(String content){
         try{
-            String fileName = "LOG_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+"_"+pendingNote.replaceAll("[^a-zA-Z0-9]","_")+".txt";
+            String fileName = "FAST_"+new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
             File downloadDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            if(!downloadDir.exists()) downloadDir.mkdirs();
-            File file = new File(downloadDir, fileName);
+            File fastLogDir = new File(downloadDir, "fast_tune_log");
+            if(!fastLogDir.exists()) fastLogDir.mkdirs();
+            File file = new File(fastLogDir, fileName);
             FileOutputStream fos = new FileOutputStream(file, false);
-            fos.write(content.getBytes());
+            fos.write(entry.toString().getBytes());
             fos.close();
-            // Also append to full log file
-            File fullFile = new File(downloadDir, "TARUNA_BLACKBOX_ALL.txt");
-            FileOutputStream fos2 = new FileOutputStream(fullFile, true);
-            fos2.write(("\n# LOG "+logCount+" - "+pendingNote+" @ "+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+"\n").getBytes());
-            fos2.write(content.getBytes());
-            fos2.close();
+            status("Fast Log SAVED: "+fileName);
+            Toast.makeText(getContext(),"FAST LOG SAVED:\nDownload/fast_tune_log/"+fileName,Toast.LENGTH_LONG).show();
         }catch(Exception e){
-            try{
-                String fileName = "LOG_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
-                File file = new File(getActivity().getExternalFilesDir(null), fileName);
-                FileOutputStream fos = new FileOutputStream(file);
-                fos.write(content.getBytes());
-                fos.close();
-                Toast.makeText(getContext(),"Saved to "+file.getAbsolutePath(),Toast.LENGTH_LONG).show();
-            }catch(Exception ex){ status("Log save fail: "+ex.getMessage()); }
+            status("Fast Log fail: "+e.getMessage());
+            Toast.makeText(getContext(),"Fast Log gagal: "+e.getMessage(),Toast.LENGTH_LONG).show();
         }
-    }
-
-    private void shareLog(){
-        if(fullLog.length()==0){ Toast.makeText(getContext(),"Belum ada log",Toast.LENGTH_SHORT).show(); return; }
-        android.content.Intent sendIntent = new android.content.Intent();
-        sendIntent.setAction(android.content.Intent.ACTION_SEND);
-        sendIntent.putExtra(android.content.Intent.EXTRA_TEXT, fullLog.toString());
-        sendIntent.setType("text/plain");
-        startActivity(android.content.Intent.createChooser(sendIntent, "Share Blackbox Log"));
     }
 }
