@@ -1,8 +1,15 @@
 package de.kai_morich.simple_usb_terminal;
 
 import android.app.AlertDialog;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Color;
+import android.hardware.usb.UsbDevice;
+import android.hardware.usb.UsbDeviceConnection;
+import android.hardware.usb.UsbManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.LayoutInflater;
@@ -13,100 +20,123 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.fragment.app.Fragment;
-import com.hoho.android.usbserial.driver.UsbSerialDriver;
-import com.hoho.android.usbserial.driver.UsbSerialPort;
-import com.hoho.android.usbserial.driver.UsbSerialProber;
-import android.hardware.usb.UsbDevice;
-import android.hardware.usb.UsbDeviceConnection;
-import android.hardware.usb.UsbManager;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
-import java.util.concurrent.Executors;
 import java.util.ArrayDeque;
 import java.io.File;
 import java.io.FileOutputStream;
 import android.os.Environment;
+import java.util.Arrays;
+import java.util.Date;
+import java.util.Locale;
+import com.hoho.android.usbserial.driver.UsbSerialPort;
+import com.hoho.android.usbserial.driver.UsbSerialProber;
 
 public class TerminalFragment extends Fragment {
 
-    private View pageGauges, pageGrid;
-    private GaugeView gaugeRpm, gaugeMap, gaugeAdv;
-    private TextView dfcoLamp, liveCellInfo, statusText;
-    private LinearLayout mapTableContainer;
-    private Button btnBack, btnGet, btnSave, btnLoad;
+    private static final String ACTION_USB_PERMISSION = "de.kai_morich.simple_usb_terminal.USB_PERMISSION";
+    private UsbSerialPort currentPort;
+    private UsbDeviceConnection currentConnection;
+    private Thread readThread;
+    private boolean stopRead = false;
+    private int deviceId = -1;
+    private int portNum = 0;
+    private PendingIntent permissionIntent;
+    private boolean receiverRegistered = false;
 
+    // GRID
+    private int[] RPM_GRID = {500,800,1000,1200,1500,1800,2100,2400,2800,3200,3600,4000,4500,5000,5800,6500};
+    private int[] MAP_GRID = {20,25,30,35,40,45,50,55,60,65,70,75,80,85,92,100};
     private int[][] advMap = new int[16][16];
     private TextView[][] cellViews = new TextView[16][16];
-    private int currentRpm=800, currentMap=20, currentAdv=18;
+    private int currentRpm = 0, currentMap = 45, currentAdv = 16;
     private int lastActiveRow=-1, lastActiveCol=-1;
-    private int[] RPM_GRID={500,800,1000,1200,1500,1800,2100,2400,2700,3000,3500,4000,4500,5000,6000,7000};
-    private int[] MAP_GRID={20,25,30,35,40,45,50,55,60,65,70,75,80,85,92,100};
-    private String buffer="";
-    private String pendingSaveContent="";
-    private androidx.activity.result.ActivityResultLauncher<android.content.Intent> saveFileLauncher, loadFileLauncher;
+    private String buffer = "";
+    private String pendingSaveContent = "";
 
-    private UsbManager usbManager;
-    private UsbDevice device;
-    private UsbDeviceConnection connection;
-    private UsbSerialPort port;
-    private boolean running = false;
-
-    private static class Sample { int rpm,map,adv; Sample(int r,int m,int a){rpm=r;map=m;adv=a;} }
-    private final ArrayDeque<Sample> history = new ArrayDeque<>();
-    private final ArrayDeque<Sample> pendingPost = new ArrayDeque<>();
+    // BLACKBOX - FORMAT BARU CUMA RPM,MAP,ADV
+    private static class Sample { int rpm,map,adv; long t; Sample(long t,int r,int m,int a){this.t=t;rpm=r;map=m;adv=a;} }
+    private final ArrayDeque<Sample> history = new ArrayDeque<>(); // 2 detik sebelum
+    private final ArrayDeque<Sample> pendingPost = new ArrayDeque<>(); // 2 detik sesudah
     private boolean waitingPost = false;
     private long logTriggerTime = 0;
-    private String pendingNote = "";
     private int logCount = 0;
 
+    // LONG LOG (TAP) - continuous
     private boolean isContinuousLogging = false;
     private File continuousFile = null;
     private FileOutputStream continuousFos = null;
     private String continuousFileName = "";
     private Button btnLog;
 
+    // UI
+    private View pageGauges, pageGrid;
+    private GaugeView gaugeRpm, gaugeMap, gaugeAdv, gaugeDfco;
+    private TextView dfcoLamp, liveCellInfo, statusText;
+    private LinearLayout mapTableContainer;
+    private Button btnBack, btnGet, btnSave, btnLoad;
+
+    private ActivityResultLauncher<Intent> loadFileLauncher, saveFileLauncher;
+
     @Override public void onCreate(Bundle savedInstanceState){
         super.onCreate(savedInstanceState);
         setRetainInstance(true);
-        if(getArguments()!=null){
-            String devName = getArguments().getString("device");
-            usbManager = (UsbManager)getActivity().getSystemService(Context.USB_SERVICE);
-            for(UsbDevice d : usbManager.getDeviceList().values()){
-                if(d.getDeviceName().equals(devName)){ device = d; break; }
-            }
-            if(device==null && !usbManager.getDeviceList().isEmpty()){
-                device = usbManager.getDeviceList().values().iterator().next();
-            }
+        Bundle args = getArguments();
+        if(args!=null){
+            deviceId = args.getInt("device", -1);
+            portNum = args.getInt("port", 0);
         }
-        saveFileLauncher=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result->{ if(result.getResultCode()==android.app.Activity.RESULT_OK && result.getData()!=null){ Uri uri=result.getData().getData(); if(uri!=null) saveMapToUri(uri, pendingSaveContent); } });
-        loadFileLauncher=registerForActivityResult(new androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult(), result->{ if(result.getResultCode()==android.app.Activity.RESULT_OK && result.getData()!=null){ Uri uri=result.getData().getData(); if(uri!=null) loadMapFromUri(uri); } });
-        int[][] base={{16,18,18,18,19,19,20,21,22,23,24,25,26,27,28,29},{16,15,16,18,19,20,22,23,24,25,26,27,28,29,30,31},{15,15,17,18,20,21,23,24,25,26,27,28,29,30,31,32},{15,15,17,19,21,23,24,25,26,27,28,29,30,31,32,33},{16,16,18,20,21,23,25,26,27,28,29,30,31,32,33,34},{17,17,19,20,22,24,25,26,27,28,29,30,31,32,33,34},{16,16,18,19,21,23,24,25,26,27,28,29,30,31,32,33},{15,15,17,18,20,22,23,24,25,26,27,28,29,30,31,32},{15,14,16,17,19,20,22,23,24,25,26,27,28,29,30,31},{14,14,15,17,18,20,21,22,23,24,25,26,27,28,29,30},{13,13,14,16,17,18,20,21,22,23,24,25,26,27,28,29},{12,12,13,15,16,17,19,20,21,22,23,24,25,26,27,28},{12,11,12,13,15,16,17,18,19,20,21,22,23,24,25,26},{11,11,12,13,14,15,17,18,19,20,21,22,23,24,25,26},{10,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24},{8,9,10,11,12,13,15,16,17,18,19,20,21,22,23,24}};
-        advMap=base;
+        // AWAL SEL SEMUA ANGKA 5 - SESUAI REQUEST BOS!
+        for(int r=0;r<16;r++) for(int c=0;c<16;c++) advMap[r][c]=5;
+
+        loadFileLauncher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+            if(result.getResultCode() == android.app.Activity.RESULT_OK && result.getData()!=null){
+                Uri uri = result.getData().getData();
+                if(uri!=null) loadMapFromUri(uri);
+            }
+        });
+        saveFileLauncher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
+            if(result.getResultCode() == android.app.Activity.RESULT_OK && result.getData()!=null){
+                Uri uri = result.getData().getData();
+                if(uri!=null) saveMapToUri(uri, pendingSaveContent);
+            }
+        });
     }
 
     @Override public View onCreateView(@NonNull LayoutInflater inflater, ViewGroup container, Bundle savedInstanceState){
-        View view=inflater.inflate(R.layout.fragment_terminal, container, false);
-        pageGauges=view.findViewById(R.id.pageGauges); pageGrid=view.findViewById(R.id.pageGrid);
-        gaugeRpm=view.findViewById(R.id.gaugeRpm); gaugeMap=view.findViewById(R.id.gaugeMap); gaugeAdv=view.findViewById(R.id.gaugeAdv);
-        dfcoLamp=view.findViewById(R.id.dfcoLamp); mapTableContainer=view.findViewById(R.id.mapTableContainer);
-        liveCellInfo=view.findViewById(R.id.liveCellInfo); statusText=view.findViewById(R.id.statusText);
-        btnBack=view.findViewById(R.id.btnBack); btnGet=view.findViewById(R.id.btnGet); btnSave=view.findViewById(R.id.btnSave); btnLoad=view.findViewById(R.id.btnLoad);
+        View view = inflater.inflate(R.layout.fragment_terminal, container, false);
+        pageGauges = view.findViewById(R.id.pageGauges);
+        pageGrid = view.findViewById(R.id.pageGrid);
+        gaugeRpm = view.findViewById(R.id.gaugeRpm);
+        gaugeMap = view.findViewById(R.id.gaugeMap);
+        gaugeAdv = view.findViewById(R.id.gaugeAdv);
+        gaugeDfco = view.findViewById(R.id.gaugeDfco);
+        dfcoLamp = view.findViewById(R.id.dfcoLamp);
+        liveCellInfo = view.findViewById(R.id.liveCellInfo);
+        statusText = view.findViewById(R.id.statusText);
+        mapTableContainer = view.findViewById(R.id.mapTableContainer);
+        btnBack = view.findViewById(R.id.btnBack);
+        btnGet = view.findViewById(R.id.btnGet);
+        btnSave = view.findViewById(R.id.btnSave);
+        btnLoad = view.findViewById(R.id.btnLoad);
         btnLog = view.findViewById(R.id.btnLog);
-        if(btnBack!=null) btnBack.setOnClickListener(v->{ pageGauges.setVisibility(View.VISIBLE); pageGrid.setVisibility(View.GONE); });
-        if(gaugeAdv!=null) gaugeAdv.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
-        if(gaugeRpm!=null) gaugeRpm.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
-        if(gaugeMap!=null) gaugeMap.setOnClickListener(v->{ pageGauges.setVisibility(View.GONE); pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
-        if(btnGet!=null) btnGet.setOnClickListener(v-> send("$GET\n"));
+
+        if(btnBack!=null) btnBack.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE); if(pageGrid!=null) pageGrid.setVisibility(View.GONE); });
+        if(gaugeAdv!=null) gaugeAdv.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); });
+        if(gaugeRpm!=null) gaugeRpm.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); });
+        if(gaugeMap!=null) gaugeMap.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); });
+        if(btnGet!=null) btnGet.setOnClickListener(v-> send("$GET"));
         if(btnSave!=null) btnSave.setOnClickListener(v-> saveMapToPhone());
         if(btnLoad!=null) btnLoad.setOnClickListener(v-> openFilePicker());
         if(btnLog!=null){
+            // TAP SEKALI = Dialog nama file -> START log sampai STOP, save di Download/tune_log/
             btnLog.setOnClickListener(v-> {
                 if(isContinuousLogging){
                     stopContinuousLog();
@@ -114,47 +144,15 @@ public class TerminalFragment extends Fragment {
                     showContinuousLogDialog();
                 }
             });
+            // LONG TAP = Fast log 2 detik sebelum + sesudah, langsung save per file di Download/fast_tune_log/
             btnLog.setOnLongClickListener(v->{ doFastLog(); return true; });
         }
+
         buildMapTable();
         if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE);
         if(pageGrid!=null) pageGrid.setVisibility(View.GONE);
         updateGauges(currentRpm, currentMap, currentAdv, false);
         return view;
-    }
-
-    @Override public void onResume(){ super.onResume(); connectDirect(); }
-    @Override public void onPause(){ super.onPause(); disconnectDirect(); }
-
-    private void connectDirect(){
-        if(device==null){ status("No device"); return; }
-        if(usbManager==null) usbManager = (UsbManager)getActivity().getSystemService(Context.USB_SERVICE);
-        if(!usbManager.hasPermission(device)){ status("No permission - go back and ALLOW"); return; }
-        Executors.newSingleThreadExecutor().submit(()->{
-            try{
-                UsbDeviceConnection conn = usbManager.openDevice(device);
-                if(conn==null){ status("Open failed"); return; }
-                UsbSerialDriver driver = UsbSerialProber.getDefaultProber().probeDevice(device);
-                if(driver==null || driver.getPorts().isEmpty()){ status("No driver"); return; }
-                UsbSerialPort p = driver.getPorts().get(0);
-                p.open(conn); p.setParameters(115200, 8, 1, 0);
-                connection = conn; port = p; running = true;
-                status("CONNECTED"); readLoop();
-            }catch(Exception e){ status("Conn err: "+e.getMessage()); }
-        });
-    }
-    private void disconnectDirect(){ 
-        if(isContinuousLogging) stopContinuousLog();
-        running=false; try{ if(port!=null) port.close(); }catch(Exception e){} try{ if(connection!=null) connection.close(); }catch(Exception e){} 
-    }
-    private void readLoop(){
-        byte[] buf=new byte[256];
-        while(running){
-            try{
-                int len=port.read(buf,200);
-                if(len>0) receive(buf,len);
-            }catch(Exception e){ status("Read err"); break; }
-        }
     }
 
     private void buildMapTable(){
@@ -206,8 +204,8 @@ public class TerminalFragment extends Fragment {
                 cur.setBackground(gd); cur.setTextColor(Color.BLACK);
             }
             lastActiveRow=activeRow; lastActiveCol=activeCol;
-            final int fRow = activeRow; final int fCol = activeCol;
-            if(liveCellInfo!=null && getActivity()!=null) getActivity().runOnUiThread(()->liveCellInfo.setText("Live Cell: RPM "+RPM_GRID[fCol]+" / MAP "+MAP_GRID[fRow]+" kPa -> Row "+fRow+" Col "+fCol+" = "+advMap[fRow][fCol]+" deg | Real ADV: "+currentAdv+" deg"));
+            final int fRow = activeRow; final int fCol = activeCol; final int fAdv = currentAdv;
+            if(liveCellInfo!=null && getActivity()!=null) getActivity().runOnUiThread(()->liveCellInfo.setText("Live Cell: RPM "+RPM_GRID[fCol]+" / MAP "+MAP_GRID[fRow]+" kPa -> Row "+fRow+" Col "+fCol+" = "+advMap[fRow][fCol]+" deg | Real ADV: "+fAdv+" deg"));
         }catch(Exception e){}
     }
 
@@ -218,9 +216,14 @@ public class TerminalFragment extends Fragment {
                 if(gaugeRpm!=null) gaugeRpm.setValue(rpm, "RPM", rpm+" RPM", 0, 7000);
                 if(gaugeMap!=null) gaugeMap.setValue(map, "MAP", map+" kPa", 0, 100);
                 if(gaugeAdv!=null) gaugeAdv.setValue(adv, "ADV", adv+" deg", 0, 50);
+                if(gaugeDfco!=null){
+                    int dfcoVal = dfco ? 100 : 0;
+                    gaugeDfco.setValue(dfcoVal, "DFCO", dfco?"ON":"OFF", 0, 100);
+                }
                 if(dfcoLamp!=null){
                     dfcoLamp.setText(dfco?"DFCO ON":"DFCO OFF");
                     dfcoLamp.setTextColor(dfco?Color.parseColor("#00FFFF"):Color.parseColor("#555555"));
+                    try{ dfcoLamp.setBackgroundResource(dfco?R.drawable.bg_dfco_on:R.drawable.bg_dfco_off); }catch(Exception ex){ dfcoLamp.setBackgroundColor(dfco?Color.parseColor("#00FFAA"):Color.parseColor("#333333")); }
                 }
                 if(btnLog!=null){
                     if(isContinuousLogging){
@@ -234,12 +237,14 @@ public class TerminalFragment extends Fragment {
                 updateActiveHighlight(rpm, map);
             }catch(Exception e){}
         });
-        history.add(new Sample(rpm, map, adv));
-        if(history.size()>40) history.poll();
+        // History buat fast log 2 detik sebelum
+        long nowMs = System.currentTimeMillis();
+        history.addLast(new Sample(nowMs, rpm, map, adv));
+        while(history.size()>40) history.removeFirst();
 
         if(waitingPost){
-            pendingPost.add(new Sample(rpm, map, adv));
-            if(System.currentTimeMillis() - logTriggerTime >= 2000){
+            pendingPost.addLast(new Sample(nowMs, rpm, map, adv));
+            if(nowMs - logTriggerTime >= 2000){
                 finishFastLog();
             }
         }
@@ -255,49 +260,196 @@ public class TerminalFragment extends Fragment {
     private void showEditDialog(int r,int c){
         if(getContext()==null) return;
         EditText input=new EditText(getContext()); input.setText(String.valueOf(advMap[r][c])); input.setInputType(2);
-        new AlertDialog.Builder(getContext()).setTitle("Edit ADV ["+MAP_GRID[r]+"kPa , "+RPM_GRID[c]+"RPM]").setView(input).setPositiveButton("SET",(d,w)->{ try{ int v=Integer.parseInt(input.getText().toString()); if(v>=0&&v<=50){ advMap[r][c]=v; if(cellViews[r][c]!=null) cellViews[r][c].setText(String.valueOf(v)); send("$SET,"+r+","+c+","+v+"\n"); } }catch(Exception e){} }).setNegativeButton("Batal",null).show();
+        new AlertDialog.Builder(getContext()).setTitle("Edit ADV ["+MAP_GRID[r]+"kPa , "+RPM_GRID[c]+"RPM]").setView(input).setPositiveButton("SET",(d,w)->{ try{ int v=Integer.parseInt(input.getText().toString()); if(v>=0&&v<=50){ advMap[r][c]=v; if(cellViews[r][c]!=null) cellViews[r][c].setText(String.valueOf(v)); send("$SET,"+r+","+c+","+v); } }catch(Exception e){} }).setNegativeButton("Batal",null).show();
     }
 
-    private void send(String str){
-        try{
-            if(port!=null) port.write(str.getBytes(), 200);
-            status("TX: "+str.trim());
-        }catch(Exception e){ status("TX Error: "+e.getMessage()); }
-    }
+    private void send(String orig){
+        new Thread(()->{
+            try{
+                String toSend;
+                if(orig.equals("$GET")) toSend = "$GET\r\n";
+                else if(orig.equals("$SAVE")) toSend = "$SAVE\r\n";
+                else if(orig.startsWith("$SET")) toSend = orig + "\r\n";
+                else { toSend = orig; if(!toSend.endsWith("\r\n")) toSend = toSend + "\r\n"; }
 
-    private void openFilePicker(){ android.content.Intent intent=new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(android.content.Intent.CATEGORY_OPENABLE); intent.setType("*/*"); try{ loadFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"File picker tidak tersedia",Toast.LENGTH_SHORT).show(); } }
-    private void loadMapFromUri(Uri uri){ try{ InputStream is=getActivity().getContentResolver().openInputStream(uri); BufferedReader reader=new BufferedReader(new InputStreamReader(is)); String line; int r=0; while((line=reader.readLine())!=null && r<16){ String[] parts=line.split(","); if(parts.length>=16){ for(int c=0;c<16;c++){ try{ advMap[r][c]=Integer.parseInt(parts[c].trim()); }catch(Exception e){} } r++; } } reader.close(); buildMapTable(); Toast.makeText(getContext(),"Loaded "+r+" rows",Toast.LENGTH_SHORT).show(); }catch(Exception e){ Toast.makeText(getContext(),"Load gagal: "+e.getMessage(),Toast.LENGTH_SHORT).show(); } }
-    private void saveMapToPhone(){ StringBuilder sb=new StringBuilder(); for(int r=0;r<16;r++){ for(int c=0;c<16;c++){ sb.append(advMap[r][c]); if(c<15) sb.append(","); } sb.append("\n"); } pendingSaveContent=sb.toString(); String fileName="ADV_MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".txt"; android.content.Intent intent=new android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT); intent.addCategory(android.content.Intent.CATEGORY_OPENABLE); intent.setType("text/plain"); intent.putExtra(android.content.Intent.EXTRA_TITLE, fileName); try{ saveFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"Save tidak support",Toast.LENGTH_SHORT).show(); } }
-    private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment(),Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
-
-    public void status(String s){ if(statusText!=null && getActivity()!=null) getActivity().runOnUiThread(()->statusText.setText(s)); }
-
-    private void receive(byte[] data, int len){
-        buffer+=new String(data,0,len);
-        int nl;
-        while((nl=buffer.indexOf("\n"))>=0){
-            String line=buffer.substring(0,nl).trim();
-            buffer=buffer.substring(nl+1);
-            if(line.isEmpty()) continue;
-            String clean=line.replace("*","").trim();
-            status(clean);
-            int rpm=currentRpm, map=currentMap, adv=currentAdv;
-            boolean found=false;
-            if(clean.contains("RPM")){
-                try{
-                    String[] p=clean.replace("$","").split(",");
-                    for(int i=0;i<p.length-1;i++){
-                        String k=p[i].trim().toUpperCase();
-                        if(k.equals("RPM")){ rpm=Integer.parseInt(p[i+1].replaceAll("[^0-9]","")); found=true; }
-                        if(k.equals("MAP")){ map=Integer.parseInt(p[i+1].replaceAll("[^0-9]","")); found=true; }
-                        if(k.equals("ADV")){ adv=Integer.parseInt(p[i+1].replaceAll("[^0-9]","")); found=true; }
+                byte[] bytes = toSend.getBytes();
+                status("TX: "+orig);
+                if(currentPort!=null){
+                    for(int i=0;i<bytes.length;i++){
+                        byte[] one = new byte[]{bytes[i]};
+                        currentPort.write(one, 300);
+                        Thread.sleep(5);
                     }
-                }catch(Exception e){}
-            }
-            if(found){ boolean dfco=(map<30 && rpm>1600); updateGauges(rpm, map, adv, dfco); }
-        }
+                }
+                Thread.sleep(25);
+                status(orig+" DIKIRIM - TUNGGU BALASAN...");
+            }catch(Exception e){ status("TX FAIL: "+e.getMessage()); }
+        }).start();
     }
 
+    private void openFilePicker(){ Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT); intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType("*/*"); try{ loadFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"File picker tidak tersedia",Toast.LENGTH_SHORT).show(); } }
+    private void saveMapToPhone(){
+        StringBuilder sb=new StringBuilder();
+        sb.append("// TARUNA TUNER V7.4 - IGNITION MAP BACKUP\n");
+        sb.append("// Date: "+new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(new Date())+"\n");
+        sb.append("// Format: Copy paste langsung ke Arduino IDE\n\n");
+        sb.append("const uint8_t ignitionMap[16][16] PROGMEM = {\n");
+        for(int r=0;r<16;r++){
+            sb.append("  {");
+            for(int c=0;c<16;c++){
+                sb.append(String.format(Locale.US, "%2d", advMap[r][c]));
+                if(c<15) sb.append(", ");
+            }
+            sb.append("}");
+            if(r<15) sb.append(",");
+            sb.append(" // Row "+r+" = MAP "+MAP_GRID[r]+" kPa\n");
+        }
+        sb.append("};\n\n");
+        sb.append("// RPM GRID\n");
+        sb.append("const uint16_t rpmGrid[16] = {");
+        for(int i=0;i<16;i++){ sb.append(RPM_GRID[i]); if(i<15) sb.append(", "); }
+        sb.append("};\n");
+        sb.append("// MAP GRID\n");
+        sb.append("const uint8_t mapGrid[16] = {");
+        for(int i=0;i<16;i++){ sb.append(MAP_GRID[i]); if(i<15) sb.append(", "); }
+        sb.append("};\n\n");
+        sb.append("// CSV_START\n");
+        for(int r=0;r<16;r++){
+            for(int c=0;c<16;c++){ sb.append(advMap[r][c]); if(c<15) sb.append(","); }
+            sb.append("\n");
+        }
+        sb.append("// CSV_END\n");
+        pendingSaveContent=sb.toString();
+        String fileName="IGN_MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".h";
+        Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TITLE, fileName);
+        try{ saveFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"Save tidak support",Toast.LENGTH_SHORT).show(); }
+    }
+    private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment()+" (Arduino format)",Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
+
+    private void loadMapFromUri(Uri uri){ try{ InputStream is=getActivity().getContentResolver().openInputStream(uri); BufferedReader reader=new BufferedReader(new InputStreamReader(is)); String line; int r=0; while((line=reader.readLine())!=null && r<16){ if(line.contains("CSV_START")||line.contains("CSV_END")||line.startsWith("//")||line.startsWith("const")) continue; String[] parts=line.split(","); if(parts.length>=16){ for(int c=0;c<16;c++){ try{ advMap[r][c]=Integer.parseInt(parts[c].trim()); }catch(Exception e){} } r++; } } reader.close(); buildMapTable(); Toast.makeText(getContext(),"Loaded "+r+" rows",Toast.LENGTH_SHORT).show(); }catch(Exception e){ Toast.makeText(getContext(),"Load gagal: "+e.getMessage(),Toast.LENGTH_SHORT).show(); } }
+
+    // USB CONNECTION (ORIGNAL WORKING)
+    private final BroadcastReceiver usbPermissionReceiver = new BroadcastReceiver(){
+        public void onReceive(Context context, Intent intent){
+            if(ACTION_USB_PERMISSION.equals(intent.getAction())){
+                synchronized(this){
+                    UsbDevice device=intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                    boolean granted=intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED,false);
+                    if(granted && device!=null) connect(); else status("permission denied");
+                    try{ if(receiverRegistered){ context.unregisterReceiver(this); receiverRegistered=false; } }catch(Exception ignored){}
+                }
+            }
+        }
+    };
+
+    @Override public void onResume(){
+        super.onResume();
+        UsbManager usbManager = (UsbManager)getActivity().getSystemService(Context.USB_SERVICE);
+        permissionIntent = PendingIntent.getBroadcast(getActivity(), 0, new Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_IMMUTABLE);
+        IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
+        getActivity().registerReceiver(usbPermissionReceiver, filter);
+        receiverRegistered = true;
+        connect();
+    }
+
+    @Override public void onPause(){
+        super.onPause();
+        disconnect();
+        try{ if(receiverRegistered){ getActivity().unregisterReceiver(usbPermissionReceiver); receiverRegistered=false; } }catch(Exception ignored){}
+    }
+
+    private void connect(){
+        UsbManager usbManager = (UsbManager)getActivity().getSystemService(Context.USB_SERVICE);
+        for(UsbDevice device : usbManager.getDeviceList().values()){
+            if(deviceId!=-1 && device.getDeviceId()!=deviceId) continue;
+            UsbDeviceConnection connection = usbManager.openDevice(device);
+            if(connection==null) continue;
+            UsbSerialPort port = UsbSerialProber.getDefaultProber().probeDevice(device).getPorts().get(portNum);
+            try{
+                port.open(connection);
+                port.setParameters(115200, 8, 1, 0);
+                currentPort = port;
+                currentConnection = connection;
+                status("CONNECTED");
+                startReadThread();
+                return;
+            }catch(Exception e){ status("Open fail: "+e.getMessage()); }
+        }
+        status("No USB device");
+    }
+
+    private void disconnect(){
+        stopRead = true;
+        if(readThread!=null){ try{ readThread.interrupt(); }catch(Exception e){} readThread=null; }
+        if(currentPort!=null){ try{ currentPort.close(); }catch(Exception e){} currentPort=null; }
+        if(currentConnection!=null){ try{ currentConnection.close(); }catch(Exception e){} currentConnection=null; }
+        if(isContinuousLogging) stopContinuousLog();
+    }
+
+    private void startReadThread(){
+        stopRead = false;
+        readThread = new Thread(()->{
+            byte[] buf = new byte[256];
+            while(!stopRead){
+                try{
+                    int len = currentPort.read(buf, 200);
+                    if(len>0){
+                        String data = new String(buf,0,len);
+                        buffer+=data;
+                        int nl;
+                        while((nl=buffer.indexOf("\n"))>=0){
+                            String line=buffer.substring(0,nl).trim();
+                            buffer=buffer.substring(nl+1);
+                            if(line.isEmpty()) continue;
+                            handleLine(line);
+                        }
+                    }
+                }catch(Exception e){ if(!stopRead) status("Read err: "+e.getMessage()); break; }
+            }
+        });
+        readThread.start();
+    }
+
+    private void handleLine(String line){
+        String clean = line.replace("*","").trim();
+        if(clean.startsWith("$OK,RPM,") || (clean.contains("RPM,") && clean.contains("MAP,"))){
+            try{
+                String tmp = clean.replace("$OK,","").replace("$",""); String[] p=tmp.split(",");
+                for(int i=0;i<p.length-1;i++){ if(p[i].trim().equals("RPM")) currentRpm=Integer.parseInt(p[i+1].trim()); if(p[i].trim().equals("MAP")) currentMap=Integer.parseInt(p[i+1].trim()); if(p[i].trim().equals("ADV")) currentAdv=Integer.parseInt(p[i+1].trim()); }
+                boolean dfco = (currentMap<30 && currentRpm>1600);
+                updateGauges(currentRpm, currentMap, currentAdv, dfco);
+            }catch(Exception e){}
+        } else if(clean.startsWith("$GRIDR,")){
+            try{
+                String[] p=clean.replace("$GRIDR,","").replace("*","").split(",");
+                if(p.length>=16){ for(int i=0;i<16;i++) RPM_GRID[i]=Integer.parseInt(p[i].trim()); }
+                status("GRID RPM auto dari ECU");
+                if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable());
+            }catch(Exception e){}
+        } else if(clean.startsWith("$GRIDM,")){
+            try{
+                String[] p=clean.replace("$GRIDM,","").replace("*","").split(",");
+                if(p.length>=16){ for(int i=0;i<16;i++) MAP_GRID[i]=Integer.parseInt(p[i].trim()); }
+                status("GRID MAP auto dari ECU");
+                if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable());
+            }catch(Exception e){}
+        } else if(clean.startsWith("$MAPR,") || clean.startsWith("MAPR,") ){
+            try{ String t = clean.replace("$MAPR,","").replace("MAPR,",""); String[] p=t.split(","); int row=Integer.parseInt(p[0].trim()); for(int c=0;c<16 && c+1<p.length;c++) advMap[row][c]=Integer.parseInt(p[c+1].trim()); if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable()); status("MAP Row "+row+" diterima"); if(row==15) { Toast.makeText(getContext(),"Full MAP 16x16 diterima!",Toast.LENGTH_LONG).show(); status("FULL MAP DITERIMA 16x16"); } }catch(Exception e){ status("MAPR parse error: "+e.getMessage()); }
+        } else if(clean.contains("MAPDONE")){ Toast.makeText(getContext(),"MAPDONE - Full map diterima!",Toast.LENGTH_LONG).show(); status("MAPDONE - FULL MAP DITERIMA"); if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable()); }
+    }
+
+    public void status(String str){
+        if(statusText!=null && getActivity()!=null) getActivity().runOnUiThread(()->{
+            if(str.toLowerCase().contains("connected")){ statusText.setText("CONNECTED"); statusText.setTextColor(Color.parseColor("#00FF88")); }
+            else if(str.toLowerCase().contains("failed")||str.toLowerCase().contains("denied")||str.toLowerCase().contains("no usb")){ statusText.setText(str.toUpperCase()); statusText.setTextColor(Color.RED); }
+            else statusText.setText(str.toUpperCase());
+        });
+    }
+
+    // === TAP SEKALI = Continuous Log dengan dialog nama file, save di Download/tune_log/ ===
     private void showContinuousLogDialog(){
         if(getContext()==null) return;
         EditText input=new EditText(getContext());
@@ -328,7 +480,6 @@ public class TerminalFragment extends Fragment {
             continuousFos.write("RPM,MAP,ADV\n".getBytes());
             isContinuousLogging = true;
             continuousFileName = fileName;
-            if(btnLog!=null) getActivity().runOnUiThread(()->{ btnLog.setText("STOP LOG"); btnLog.setBackgroundColor(Color.RED); });
             status("Long Log START: "+fileName);
             Toast.makeText(getContext(),"START LOG: "+fileName+"\nFolder tune_log",Toast.LENGTH_LONG).show();
         }catch(Exception e){
@@ -343,12 +494,12 @@ public class TerminalFragment extends Fragment {
             isContinuousLogging = false;
             status("Long Log STOP: "+continuousFileName+" SAVED");
             Toast.makeText(getContext(),"STOP LOG SAVED:\nDownload/tune_log/"+continuousFileName,Toast.LENGTH_LONG).show();
-            if(btnLog!=null) getActivity().runOnUiThread(()->{ btnLog.setText("LOG"); btnLog.setBackgroundColor(Color.parseColor("#2196F3")); });
         }catch(Exception e){
             status("Log STOP fail: "+e.getMessage());
         }
     }
 
+    // === LONG TAP = Fast Log 2 detik sebelum + 2 detik sesudah, per file di Download/fast_tune_log/ ===
     private void doFastLog(){
         if(isContinuousLogging){
             Toast.makeText(getContext(),"Stop Long Log dulu!",Toast.LENGTH_SHORT).show();
