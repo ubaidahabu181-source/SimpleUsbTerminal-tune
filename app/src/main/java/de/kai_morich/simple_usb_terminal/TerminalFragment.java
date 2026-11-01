@@ -144,7 +144,7 @@ public class TerminalFragment extends Fragment {
         return view;
     }
 
-    private void buildMapTable(){ /* keep original */ 
+    private void buildMapTable(){
         if(mapTableContainer==null) return;
         if(getActivity()==null) return;
         mapTableContainer.removeAllViews();
@@ -307,7 +307,6 @@ public class TerminalFragment extends Fragment {
         }catch(Exception e){ status("Save fail: "+e.getMessage()); }
     }
 
-    // LOG DIALOGS
     private void showStartContinuousDialog(){
         if(getContext()==null) return;
         LinearLayout layout = new LinearLayout(getContext());
@@ -416,7 +415,6 @@ public class TerminalFragment extends Fragment {
         });
     }
 
-    // LONG PRESS = SNAPSHOT
     private void doSnapshotLog(){
         if(getContext()==null) return;
         long now = System.currentTimeMillis();
@@ -459,28 +457,24 @@ public class TerminalFragment extends Fragment {
             entry.append(String.format(Locale.US, "%d %d %d\n", s.rpm, s.map, s.adv));
         }
         fullLog.append(entry.toString());
-        // === FIX: SIMPAN FILE BARU TERUS, GAK NIMPA! ===
         String savedName = saveFastTuneLogNewFile(entry.toString());
-        // juga simpan ke tune_log biar ada backup
         saveSnapshotToTuneLog(entry.toString());
         status("SNAPSHOT #"+logCount+" SAVED: "+savedName);
         Toast.makeText(getContext(),"SNAPSHOT #"+logCount+" saved: "+savedName,Toast.LENGTH_LONG).show();
     }
 
-    // === FIX UTAMA SNAP LOG: FILE BARU SATU-SATU, GAK NIMPA ===
+    // === FIX 2: FILE BARU TERUS, GAK NIMPA ===
     private String saveFastTuneLogNewFile(String content){
         try{
             java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
             java.io.File fastDir = new java.io.File(downloadDir, "fast_tuneLog");
             if(!fastDir.exists()) fastDir.mkdirs();
-            // Nama file baru tiap snapshot: SNAP_yyyyMMdd_HHmmss_SSS_#log.txt
             String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(new Date());
             String fileName = "SNAP_"+stamp+"_"+logCount+".txt";
             java.io.File file = new java.io.File(fastDir, fileName);
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(file, false); // false = file baru
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(file, false);
             fos.write(content.getBytes());
             fos.close();
-            // append juga ke log gabungan biar tetep ada history
             java.io.File allFile = new java.io.File(fastDir, "_ALL_SNAP.txt");
             java.io.FileOutputStream fosAll = new java.io.FileOutputStream(allFile, true);
             fosAll.write(("--- "+fileName+" ---\n").getBytes());
@@ -493,7 +487,7 @@ public class TerminalFragment extends Fragment {
         }
     }
 
-    private void saveFastTuneLog(String content){ // keep old for compatibility but redirect
+    private void saveFastTuneLog(String content){
         saveFastTuneLogNewFile(content);
     }
 
@@ -626,7 +620,7 @@ public class TerminalFragment extends Fragment {
         }
     };
 
-    // === FIX DFCO: BACA DARI ECU! ===
+    // === FIX 1: DFCO BACA DARI ECU, OR SIMPLE ===
     private void handleLine(String line){
         String clean = line.replace("*","").trim();
         if(clean.startsWith("$OK,RPM,") || (clean.contains("RPM,") && clean.contains("MAP,"))){
@@ -643,7 +637,7 @@ public class TerminalFragment extends Fragment {
                     if(key.equals("DFCO")){ hasDfcoFlag=true; dfcoFromEcu = val.equals("1") || val.equalsIgnoreCase("ON") || val.equalsIgnoreCase("TRUE"); }
                 }
                 boolean dfco;
-                if(hasDfcoFlag) dfco = dfcoFromEcu; // PAKAI DARI ECU OR SIMPLE!
+                if(hasDfcoFlag) dfco = dfcoFromEcu; // PAKAI DARI ECU! 1900/32 ON!
                 else dfco = (currentMap<30 && currentRpm>1600); // fallback lama
                 updateGauges(currentRpm, currentMap, currentAdv, dfco);
                 long nowMs = System.currentTimeMillis();
