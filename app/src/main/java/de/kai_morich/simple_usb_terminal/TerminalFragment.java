@@ -125,69 +125,79 @@ public class TerminalFragment extends Fragment {
         if(gaugeRpm!=null) gaugeRpm.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(gaugeMap!=null) gaugeMap.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(gaugeAdv!=null) gaugeAdv.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
+        if(gaugeDfco!=null) gaugeDfco.setOnClickListener(v->{ if(pageGauges!=null) pageGauges.setVisibility(View.GONE); if(pageGrid!=null) pageGrid.setVisibility(View.VISIBLE); buildMapTable(); });
         if(btnGet!=null) btnGet.setOnClickListener(v-> send("$GET"));
-        if(btnSave!=null) btnSave.setOnClickListener(v-> send("$SAVE"));
+        if(btnSave!=null) btnSave.setOnClickListener(v-> saveMapToPhone());
         if(btnLoad!=null) btnLoad.setOnClickListener(v-> openFilePicker());
+        // === LOGIC BARU BLACKBOX ===
         if(btnLog!=null){
-            btnLog.setOnClickListener(v->{
-                if(isContinuousLogging) showStopContinuousDialog();
-                else showStartContinuousDialog();
+            btnLog.setOnClickListener(v-> {
+                if(isContinuousLogging){
+                    showStopContinuousDialog();
+                } else {
+                    showStartContinuousDialog();
+                }
             });
-            btnLog.setOnLongClickListener(v->{
-                doSnapshotLog();
-                return true;
-            });
+            btnLog.setOnLongClickListener(v->{ doSnapshotLog(); return true; });
         }
         if(btnShareLog!=null) btnShareLog.setOnClickListener(v-> shareLog());
-        if(btnClearLog!=null) btnClearLog.setOnClickListener(v-> { fullLog.setLength(0); logCount=0; status("LOG CLEARED"); });
+        if(btnClearLog!=null) btnClearLog.setOnClickListener(v->{ fullLog.setLength(0); logCount=0; Toast.makeText(getContext(),"Log cleared",Toast.LENGTH_SHORT).show(); });
         buildMapTable();
+        if(pageGauges!=null) pageGauges.setVisibility(View.VISIBLE);
+        if(pageGrid!=null) pageGrid.setVisibility(View.GONE);
+        updateGauges(currentRpm, currentMap, currentAdv, false);
+        updateLogButtonUI();
+        connect();
         return view;
     }
 
     private void buildMapTable(){
-        if(mapTableContainer==null) return;
-        if(getActivity()==null) return;
+        if(mapTableContainer==null||getContext()==null) return;
         mapTableContainer.removeAllViews();
-        android.widget.TableLayout table = new android.widget.TableLayout(getContext());
-        android.widget.TableRow header = new android.widget.TableRow(getContext());
-        TextView corner = new TextView(getContext()); corner.setText("MAP\\RPM"); header.addView(corner);
-        for(int c=0;c<16;c++){ TextView tv=new TextView(getContext()); tv.setText(String.valueOf(RPM_GRID[c])); tv.setPadding(10,5,10,5); header.addView(tv); }
-        table.addView(header);
+        LinearLayout header=new LinearLayout(getContext()); header.setOrientation(LinearLayout.HORIZONTAL);
+        TextView corner=new TextView(getContext()); corner.setText("MAP/RPM"); corner.setWidth(180); corner.setTextColor(Color.GRAY); header.addView(corner);
+        for(int c=0;c<16;c++){ TextView tv=new TextView(getContext()); tv.setText(String.valueOf(RPM_GRID[c])); tv.setWidth(120); tv.setTextColor(Color.GRAY); header.addView(tv); }
+        mapTableContainer.addView(header);
         for(int r=0;r<16;r++){
-            android.widget.TableRow row = new android.widget.TableRow(getContext());
-            TextView label = new TextView(getContext()); label.setText(String.valueOf(MAP_GRID[r])); label.setPadding(10,5,10,5); row.addView(label);
+            LinearLayout row=new LinearLayout(getContext()); row.setOrientation(LinearLayout.HORIZONTAL);
+            TextView label=new TextView(getContext()); label.setText(MAP_GRID[r]+"kPa"); label.setWidth(180); label.setTextColor(Color.CYAN); row.addView(label);
             for(int c=0;c<16;c++){
-                TextView tv = new TextView(getContext()); tv.setText(String.valueOf(advMap[r][c])); tv.setPadding(15,10,15,10);
-                final int fr=r, fc=c;
-                tv.setOnClickListener(v-> showEditDialog(fr,fc));
-                cellViews[r][c]=tv;
-                row.addView(tv);
+                TextView cell=new TextView(getContext()); cell.setText(String.valueOf(advMap[r][c])); cell.setWidth(120); cell.setHeight(90); cell.setGravity(17); cell.setPadding(8,8,8,8);
+                int v=advMap[r][c]; cell.setTextColor(Color.WHITE);
+                if(v==5) cell.setBackgroundColor(Color.parseColor("#333333"));
+                else if(v<13) cell.setBackgroundColor(Color.parseColor("#1A3A2A"));
+                else if(v<20) cell.setBackgroundColor(Color.parseColor("#2A5A1A"));
+                else if(v<27) cell.setBackgroundColor(Color.parseColor("#8A6A00"));
+                else cell.setBackgroundColor(Color.parseColor("#8A2A00"));
+                final int fr=r,fc=c; cell.setOnClickListener(vw->showEditDialog(fr,fc)); cellViews[r][c]=cell; row.addView(cell);
             }
-            table.addView(row);
+            mapTableContainer.addView(row);
         }
-        mapTableContainer.addView(table);
-        updateActiveHighlight(currentRpm, currentMap);
+        lastActiveRow=-1; lastActiveCol=-1; updateActiveHighlight(currentRpm, currentMap);
     }
 
-    private void updateActiveHighlight(int rpm, int map){
+    private void updateActiveHighlight(int rpm, int mapKpa){
+        if(cellViews==null) return;
+        int activeRow=0, activeCol=0;
+        for(int i=0;i<15;i++){ if(mapKpa>=MAP_GRID[i] && mapKpa<MAP_GRID[i+1]){ activeRow=i; break; } if(mapKpa>=MAP_GRID[15]) activeRow=15; }
+        for(int i=0;i<15;i++){ if(rpm>=RPM_GRID[i] && rpm<RPM_GRID[i+1]){ activeCol=i; break; } if(rpm>=RPM_GRID[15]) activeCol=15; }
+        if(activeRow==lastActiveRow && activeCol==lastActiveCol) return;
         try{
-            int activeRow=0, activeCol=0;
-            for(int i=0;i<15;i++) if(map>=MAP_GRID[i] && map<MAP_GRID[i+1]){activeRow=i; break;}
-            for(int i=0;i<15;i++) if(rpm>=RPM_GRID[i] && rpm<RPM_GRID[i+1]){activeCol=i; break;}
-            if(rpm>=RPM_GRID[15]) activeCol=15;
-            if(map>=MAP_GRID[15]) activeRow=15;
-            if(lastActiveRow>=0 && lastActiveCol>=0 && lastActiveRow<16 && lastActiveCol<16){
-                if(cellViews[lastActiveRow][lastActiveCol]!=null){
-                    cellViews[lastActiveRow][lastActiveCol].setBackgroundColor(Color.TRANSPARENT);
-                    cellViews[lastActiveRow][lastActiveCol].setTextColor(Color.WHITE);
+            if(lastActiveRow>=0 && lastActiveCol>=0){
+                TextView old=cellViews[lastActiveRow][lastActiveCol];
+                if(old!=null){ int v=advMap[lastActiveRow][lastActiveCol]; old.setText(String.valueOf(v)); old.setTextColor(Color.WHITE);
+                    if(v==5) old.setBackgroundColor(Color.parseColor("#333333"));
+                    else if(v<13) old.setBackgroundColor(Color.parseColor("#1A3A2A"));
+                    else if(v<20) old.setBackgroundColor(Color.parseColor("#2A5A1A"));
+                    else if(v<27) old.setBackgroundColor(Color.parseColor("#8A6A00"));
+                    else old.setBackgroundColor(Color.parseColor("#8A2A00"));
                 }
             }
-            if(activeRow<16 && activeCol<16 && cellViews[activeRow][activeCol]!=null){
+            TextView cur=cellViews[activeRow][activeCol];
+            if(cur!=null){
                 android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
-                gd.setColor(Color.parseColor("#FFEB3B"));
-                gd.setStroke(2, Color.parseColor("#FF9800"));
-                cellViews[activeRow][activeCol].setBackground(gd);
-                cellViews[activeRow][activeCol].setTextColor(Color.BLACK);
+                gd.setColor(Color.parseColor("#FFEB3B")); gd.setStroke(5, Color.parseColor("#FF3D00")); gd.setCornerRadius(6);
+                cur.setBackground(gd); cur.setTextColor(Color.BLACK);
             }
             lastActiveRow=activeRow; lastActiveCol=activeCol;
             if(liveCellInfo!=null && getActivity()!=null){
@@ -207,8 +217,15 @@ public class TerminalFragment extends Fragment {
                 if(gaugeDfco!=null){ int dfcoVal = dfco ? 100 : 0; gaugeDfco.setValue(dfcoVal, "DFCO", dfco?"ON":"OFF", 0, 100); }
                 if(dfcoLamp!=null){ dfcoLamp.setText(dfco?"DFCO ON":"DFCO OFF"); }
                 updateActiveHighlight(rpm, map);
+                // Jika continuous logging aktif, tulis tiap sample
                 if(isContinuousLogging && continuousFos!=null){
                     try{
+                        long elapsed = System.currentTimeMillis() - continuousStartTime;
+                        int rIdx=0,cIdx=0;
+                        for(int i=0;i<15;i++) if(map>=MAP_GRID[i] && map<MAP_GRID[i+1]){rIdx=i; break;}
+                        for(int i=0;i<15;i++) if(rpm>=RPM_GRID[i] && rpm<RPM_GRID[i+1]){cIdx=i; break;}
+                        if(rpm>=RPM_GRID[15]) cIdx=15;
+                        if(map>=MAP_GRID[15]) rIdx=15;
                         String line = String.format(Locale.US, "%d %d %d\n", rpm, map, adv);
                         continuousFos.write(line.getBytes());
                         continuousLogCount++;
@@ -290,30 +307,54 @@ public class TerminalFragment extends Fragment {
             }
             reader.close();
             if(rows.size()>=16){
-                for(int r=0;r<16;r++) for(int c=0;c<16;c++) advMap[r][c]=rows.get(r)[c];
-                if(getActivity()!=null) getActivity().runOnUiThread(()->buildMapTable());
-                status("MAP LOADED "+rows.size()+" rows");
+                for(int i=0;i<16 && i<rows.size();i++){ for(int c=0;c<16;c++) advMap[i][c]=rows.get(i)[c]; }
+                buildMapTable();
+                Toast.makeText(getContext(),"Loaded MAP "+rows.size()+" rows + RPM/MAP grid",Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(getContext(),"Format tidak dikenal",Toast.LENGTH_SHORT).show();
             }
-        }catch(Exception e){ status("Load fail: "+e.getMessage()); }
+        }catch(Exception e){ Toast.makeText(getContext(),"Load gagal: "+e.getMessage(),Toast.LENGTH_SHORT).show(); }
     }
 
-    private void saveMapToUri(Uri uri, String content){
-        try{
-            OutputStream os = getActivity().getContentResolver().openOutputStream(uri);
-            os.write(content.getBytes());
-            os.close();
-            status("MAP SAVED");
-            Toast.makeText(getContext(),"MAP SAVED",Toast.LENGTH_SHORT).show();
-        }catch(Exception e){ status("Save fail: "+e.getMessage()); }
+    private void saveMapToPhone(){
+        StringBuilder sb=new StringBuilder();
+        sb.append("PROGMEM = {\n");
+        for(int r=0;r<16;r++){
+            sb.append("  {");
+            for(int c=0;c<16;c++){
+                sb.append(String.format(Locale.US, "%2d", advMap[r][c]));
+                if(c<15) sb.append(", ");
+            }
+            sb.append(" },\n");
+        }
+        sb.append("};\n\n");
+        sb.append("// RPM breakpoints\n");
+        sb.append(" {");
+        for(int i=0;i<16;i++){ sb.append(RPM_GRID[i]); if(i<15) sb.append(", "); }
+        sb.append("};\n");
+        sb.append("// KPA breakpoints\n");
+        sb.append(" {");
+        for(int i=0;i<16;i++){ sb.append(MAP_GRID[i]); if(i<15) sb.append(", "); }
+        sb.append("};\n");
+        pendingSaveContent=sb.toString();
+        String fileName="MAP_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date())+".txt";
+        Intent intent=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TITLE, fileName);
+        try{ saveFileLauncher.launch(intent); }catch(Exception e){ Toast.makeText(getContext(),"Save tidak support",Toast.LENGTH_SHORT).show(); }
     }
 
+    private void saveMapToUri(Uri uri, String content){ try{ OutputStream os=getActivity().getContentResolver().openOutputStream(uri); os.write(content.getBytes()); os.close(); Toast.makeText(getContext(),"Saved: "+uri.getLastPathSegment(),Toast.LENGTH_LONG).show(); }catch(Exception e){ Toast.makeText(getContext(),"Gagal: "+e.getMessage(),Toast.LENGTH_LONG).show(); } }
+
+    // === NEW BLACKBOX LOGIC V2 ===
     private void showStartContinuousDialog(){
         if(getContext()==null) return;
         LinearLayout layout = new LinearLayout(getContext());
         layout.setOrientation(LinearLayout.VERTICAL);
         layout.setPadding(40,20,40,20);
         TextView label = new TextView(getContext());
-        label.setText("Nama file log (akan disimpan di Download/tune_log/)");
+        label.setText("Nama file .txt akan disimpan di Download/tune_log/");
         label.setTextColor(Color.GRAY);
         label.setTextSize(12);
         EditText input = new EditText(getContext());
@@ -353,6 +394,7 @@ public class TerminalFragment extends Fragment {
             java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
             java.io.File tuneLogDir = new java.io.File(downloadDir, "tune_log");
             if(!tuneLogDir.exists()) tuneLogDir.mkdirs();
+            // Bersihkan nama file dari karakter illegal
             fileName = fileName.replaceAll("[\\\\/:*?\"<>|]", "_");
             continuousFile = new java.io.File(tuneLogDir, fileName);
             continuousFos = new java.io.FileOutputStream(continuousFile);
@@ -360,6 +402,7 @@ public class TerminalFragment extends Fragment {
             continuousStartTime = System.currentTimeMillis();
             continuousLogCount = 0;
             isContinuousLogging = true;
+            // Tulis header
             String header = String.format(Locale.US, "# rpm kpa advance\n");
             continuousFos.write(header.getBytes());
             updateLogButtonUI();
@@ -415,6 +458,7 @@ public class TerminalFragment extends Fragment {
         });
     }
 
+    // LONG PRESS = SNAPSHOT 1 DETIK BEFORE+AFTER ke folder sama tune_log
     private void doSnapshotLog(){
         if(getContext()==null) return;
         long now = System.currentTimeMillis();
@@ -441,54 +485,42 @@ public class TerminalFragment extends Fragment {
         status("LOG trigger @ "+currentRpm+" RPM - merekam 2 detik sesudah...");
         Toast.makeText(getContext(),"LOG trigger - tunggu 2 detik sesudah",Toast.LENGTH_SHORT).show();
     }
-
     private void finishLogWithPost(){
         waitingPost = false;
         logCount++;
+        // Kumpulkan 2 detik sebelum + 2 detik sesudah - format rpm kpa advance only
         long cutoffBefore = logTriggerTime - 2000;
         StringBuilder entry = new StringBuilder();
+        // Format map kpa advance = rpm kpa advance
         for(Sample s: history){
             if(s.t >= cutoffBefore && s.t <= logTriggerTime){
                 entry.append(String.format(Locale.US, "%d %d %d\n", s.rpm, s.map, s.adv));
             }
         }
+        // Trigger point
         entry.append(String.format(Locale.US, "%d %d %d\n", currentRpm, currentMap, currentAdv));
         for(Sample s: pendingPost){
             entry.append(String.format(Locale.US, "%d %d %d\n", s.rpm, s.map, s.adv));
         }
         fullLog.append(entry.toString());
-        String savedName = saveFastTuneLogNewFile(entry.toString());
-        saveSnapshotToTuneLog(entry.toString());
-        status("SNAPSHOT #"+logCount+" SAVED: "+savedName);
-        Toast.makeText(getContext(),"SNAPSHOT #"+logCount+" saved: "+savedName,Toast.LENGTH_LONG).show();
+        // Save langsung ke Download/fast_tuneLog/log.txt - format rpm kpa advance
+        saveFastTuneLog(entry.toString());
+        status("SNAPSHOT #"+logCount+" SAVED to fast_tuneLog/log.txt");
+        Toast.makeText(getContext(),"SNAPSHOT #"+logCount+" saved to Download/fast_tuneLog/log.txt",Toast.LENGTH_LONG).show();
     }
 
-    // === FIX 2: FILE BARU TERUS, GAK NIMPA ===
-    private String saveFastTuneLogNewFile(String content){
+    private void saveFastTuneLog(String content){
         try{
             java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
             java.io.File fastDir = new java.io.File(downloadDir, "fast_tuneLog");
             if(!fastDir.exists()) fastDir.mkdirs();
-            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(new Date());
-            String fileName = "SNAP_"+stamp+"_"+logCount+".txt";
-            java.io.File file = new java.io.File(fastDir, fileName);
+            java.io.File file = new java.io.File(fastDir, "log.txt");
             java.io.FileOutputStream fos = new java.io.FileOutputStream(file, false);
             fos.write(content.getBytes());
             fos.close();
-            java.io.File allFile = new java.io.File(fastDir, "_ALL_SNAP.txt");
-            java.io.FileOutputStream fosAll = new java.io.FileOutputStream(allFile, true);
-            fosAll.write(("--- "+fileName+" ---\n").getBytes());
-            fosAll.write(content.getBytes());
-            fosAll.close();
-            return fileName;
         }catch(Exception e){
             status("Fast log save fail: "+e.getMessage());
-            return "fail";
         }
-    }
-
-    private void saveFastTuneLog(String content){
-        saveFastTuneLogNewFile(content);
     }
 
     private void saveSnapshotToTuneLog(String content){
@@ -496,9 +528,9 @@ public class TerminalFragment extends Fragment {
             java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
             java.io.File tuneLogDir = new java.io.File(downloadDir, "tune_log");
             if(!tuneLogDir.exists()) tuneLogDir.mkdirs();
-            String fileName = "SNAPSHOT_"+new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(new Date(logTriggerTime))+"_"+logCount+".txt";
+            String fileName = "SNAPSHOT_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
             java.io.File file = new java.io.File(tuneLogDir, fileName);
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(file, false);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(file, true);
             fos.write(content.getBytes());
             fos.close();
             java.io.File allFile = new java.io.File(tuneLogDir, "BLACKBOX_ALL.txt");
@@ -512,16 +544,16 @@ public class TerminalFragment extends Fragment {
 
     private void saveLogToDownload(String content){
         try{
-            String fileName = "BLACKBOX_LOG_"+new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(new Date(logTriggerTime))+"_"+logCount+".txt";
+            String fileName = "BLACKBOX_LOG_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
             java.io.File downloadDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS);
             if(!downloadDir.exists()) downloadDir.mkdirs();
             java.io.File file = new java.io.File(downloadDir, fileName);
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(file, false);
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(file, true);
             fos.write(content.getBytes());
             fos.close();
         }catch(Exception e){
             try{
-                String fileName = "BLACKBOX_"+new SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
+                String fileName = "BLACKBOX_"+new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date(logTriggerTime))+".txt";
                 java.io.File file = new java.io.File(getActivity().getExternalFilesDir(null), fileName);
                 java.io.FileOutputStream fos = new java.io.FileOutputStream(file);
                 fos.write(content.getBytes());
@@ -566,10 +598,10 @@ public class TerminalFragment extends Fragment {
                 return;
             }
             UsbDeviceConnection usbConnection = usbManager.openDevice(device);
-            if(usbConnection==null){ status("open device failed"); return; }
-            com.hoho.android.usbserial.driver.UsbSerialDriver driver = UsbSerialProber.getDefaultProber().probeDevice(device);
-            if(driver==null){ status("no driver for device"); return; }
-            UsbSerialPort usbSerialPort = driver.getPorts().get(0);
+            if(usbConnection==null){ status("open failed - permission denied / busy"); return; }
+            UsbSerialPort usbSerialPort=null;
+            try{ usbSerialPort=UsbSerialProber.getDefaultProber().probeDevice(device).getPorts().get(portNum); }catch(Exception e){ usbSerialPort=UsbSerialProber.getDefaultProber().probeDevice(device).getPorts().get(0); }
+            if(usbSerialPort==null){ status("no driver for device"); return; }
             usbSerialPort.open(usbConnection);
             usbSerialPort.setParameters(115200, 8, 1, UsbSerialPort.PARITY_NONE);
             try{ usbSerialPort.setDTR(false); }catch(Exception ignored){}
@@ -620,25 +652,13 @@ public class TerminalFragment extends Fragment {
         }
     };
 
-    // === FIX 1: DFCO BACA DARI ECU, OR SIMPLE ===
     private void handleLine(String line){
         String clean = line.replace("*","").trim();
         if(clean.startsWith("$OK,RPM,") || (clean.contains("RPM,") && clean.contains("MAP,"))){
             try{
                 String tmp = clean.replace("$OK,","").replace("$",""); String[] p=tmp.split(",");
-                boolean hasDfcoFlag = false;
-                boolean dfcoFromEcu = false;
-                for(int i=0;i<p.length-1;i++){
-                    String key = p[i].trim();
-                    String val = p[i+1].trim();
-                    if(key.equals("RPM")) currentRpm=Integer.parseInt(val);
-                    if(key.equals("MAP")) currentMap=Integer.parseInt(val);
-                    if(key.equals("ADV")) currentAdv=Integer.parseInt(val);
-                    if(key.equals("DFCO")){ hasDfcoFlag=true; dfcoFromEcu = val.equals("1") || val.equalsIgnoreCase("ON") || val.equalsIgnoreCase("TRUE"); }
-                }
-                boolean dfco;
-                if(hasDfcoFlag) dfco = dfcoFromEcu; // PAKAI DARI ECU! 1900/32 ON!
-                else dfco = (currentMap<30 && currentRpm>1600); // fallback lama
+                for(int i=0;i<p.length-1;i++){ if(p[i].trim().equals("RPM")) currentRpm=Integer.parseInt(p[i+1].trim()); if(p[i].trim().equals("MAP")) currentMap=Integer.parseInt(p[i+1].trim()); if(p[i].trim().equals("ADV")) currentAdv=Integer.parseInt(p[i+1].trim()); }
+                boolean dfco = (currentRpm >= 1700 || currentMap <= 25);
                 updateGauges(currentRpm, currentMap, currentAdv, dfco);
                 long nowMs = System.currentTimeMillis();
                 history.addLast(new Sample(nowMs, currentRpm, currentMap, currentAdv));
